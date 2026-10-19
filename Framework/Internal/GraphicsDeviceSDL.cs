@@ -72,6 +72,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		public readonly nint Handle = handle;
 		public bool ReclaimPending;
 		public bool Claimed;
+		public bool PendingResize; // window pixel size changed, backbuffer must follow before the next draw
 		public Target? Backbuffer;
 		public Point2 BackbufferSize;
 		public bool SupportsMailboxPresentMode;
@@ -473,6 +474,56 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		{
 			inBackground = false;
 		}
+
+		// a window changed its size in pixels (resize, fullscreen, display change): resize the
+		// backbuffer before the next draw, see ApplyPendingResize
+		if (type == SDL_EventType.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+		{
+			foreach (var state in windows.Values)
+				state.PendingResize = true;
+		}
+	}
+
+	/// <summary>
+	/// Brings the backbuffer in line with the window's current pixel size when the size changed
+	/// since the last frame. Without this, the frame after a resize (for example switching to
+	/// fullscreen) is rendered at the old size and blitted into a part of the new swapchain, and
+	/// the rest of the swapchain shows undefined memory for one frame.
+	/// Only outside of a render pass; PresentWindow covers the remaining cases.
+	/// </summary>
+	private void ApplyPendingResize(WindowState state)
+	{
+		if (!state.PendingResize || state.ReclaimPending || renderPassTarget != null)
+			return;
+		state.PendingResize = false;
+
+		SDL_GetWindowSizeInPixels(state.Handle, out int width, out int height);
+		if (width <= 0 || height <= 0)
+			return;
+		UpdateBackbuffer(state, width, height);
+	}
+
+	/// <summary>
+	/// Resizes the backbuffer for the given swapchain size, with hysteresis so dragging the window
+	/// does not recreate it every frame.
+	/// </summary>
+	private void UpdateBackbuffer(WindowState state, int width, int height)
+	{
+		state.BackbufferSize = new Point2(width, height);
+
+		// intentionally resizing the buffer a bit larger so we're not
+		// constantly recreating buffers as the window is dragged/scaled
+		if (state.Backbuffer == null || state.Backbuffer.Width < state.BackbufferSize.X || state.Backbuffer.Height < state.BackbufferSize.Y)
+		{
+			state.Backbuffer?.Dispose();
+			state.Backbuffer = new(this, state.BackbufferSize.X + 64, state.BackbufferSize.Y + 64, backbufferFormat, BackbufferName);
+		}
+		// resize buffer if it's too large
+		else if (state.Backbuffer.Width > state.BackbufferSize.X + 128 || state.Backbuffer.Height > state.BackbufferSize.Y + 128)
+		{
+			state.Backbuffer?.Dispose();
+			state.Backbuffer = new(this, state.BackbufferSize.X, state.BackbufferSize.Y, backbufferFormat, BackbufferName);
+		}
 	}
 
 	private void PresentWindow(WindowState state)
@@ -486,6 +537,9 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		if ((SDL_GetWindowFlags(state.Handle) & SDL_WindowFlags.SDL_WINDOW_HIDDEN) != 0)
 			return;
 
+		// a size change that nothing drew after yet
+		ApplyPendingResize(state);
+
 		// get the swapchain for this window
 		if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmdRender, state.Handle, out var scTex, out var scW, out var scH))
 		{
@@ -496,6 +550,13 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		// blit backbuffer to swapchain
 		if (scTex != nint.Zero && scW > 0 && scH > 0 && state.BackbufferSize.X > 0 && state.BackbufferSize.Y > 0 && state.Backbuffer != null)
 		{
+			// if the blit does not cover the whole swapchain (backbuffer smaller than the
+			// swapchain, e.g. the first frame after a resize), clear the rest to black instead
+			// of leaving undefined memory on screen
+			var blitW = Math.Min(scW, (uint)state.Backbuffer.Width);
+			var blitH = Math.Min(scH, (uint)state.Backbuffer.Height);
+			var covers = blitW >= scW && blitH >= scH;
+
 			SDL_GPUBlitInfo blit = new()
 			{
 				source = new()
@@ -505,8 +566,8 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 					layer_or_depth_plane = 0,
 					x = 0,
 					y = 0,
-					w = Math.Min(scW, (uint)state.Backbuffer.Width),
-					h = Math.Min(scH, (uint)state.Backbuffer.Height)
+					w = blitW,
+					h = blitH
 				},
 				destination = new()
 				{
@@ -515,10 +576,11 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 					layer_or_depth_plane = 0,
 					x = 0,
 					y = 0,
-					w = Math.Min(scW, (uint)state.Backbuffer.Width),
-					h = Math.Min(scH, (uint)state.Backbuffer.Height)
+					w = blitW,
+					h = blitH
 				},
-				load_op = SDL_GPULoadOp.SDL_GPU_LOADOP_DONT_CARE,
+				load_op = covers ? SDL_GPULoadOp.SDL_GPU_LOADOP_DONT_CARE : SDL_GPULoadOp.SDL_GPU_LOADOP_CLEAR,
+				clear_color = new() { r = 0, g = 0, b = 0, a = 1 },
 				flip_mode = SDL_FlipMode.SDL_FLIP_NONE,
 				filter = SDL_GPUFilter.SDL_GPU_FILTER_NEAREST,
 				cycle = false
@@ -529,23 +591,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 
 		// update buffer size (if non-zero swapchain size)
 		if (scW > 0 && scH > 0)
-		{
-			state.BackbufferSize = new Point2((int)scW, (int)scH);
-
-			// intentionally resizing the buffer a bit larger so we're not
-			// constantly recreating buffers as the window is dragged/scaled
-			if (state.Backbuffer == null || state.Backbuffer.Width < state.BackbufferSize.X || state.Backbuffer.Height < state.BackbufferSize.Y)
-			{
-				state.Backbuffer?.Dispose();
-				state.Backbuffer = new(this, state.BackbufferSize.X + 64, state.BackbufferSize.Y + 64, backbufferFormat, BackbufferName);
-			}
-			// resize buffer if it's too large
-			else if (state.Backbuffer.Width > state.BackbufferSize.X + 128 || state.Backbuffer.Height > state.BackbufferSize.Y + 128)
-			{
-				state.Backbuffer?.Dispose();
-				state.Backbuffer = new(this, state.BackbufferSize.X, state.BackbufferSize.Y, backbufferFormat, BackbufferName);
-			}
-		}
+			UpdateBackbuffer(state, (int)scW, (int)scH);
 	}
 
 	/// <summary>
@@ -1988,11 +2034,15 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		// get backbuffer target
 		if (drawableTarget.Surface is Window window &&
 			!window.IsDestroyed &&
-			windows.TryGetValue(window.ID, out var state) &&
-			state.Backbuffer is {} backbuffer)
+			windows.TryGetValue(window.ID, out var state))
 		{
-			size = state.BackbufferSize;
-			return backbuffer;
+			// the window may have changed its pixel size since the last frame
+			ApplyPendingResize(state);
+			if (state.Backbuffer is {} backbuffer)
+			{
+				size = state.BackbufferSize;
+				return backbuffer;
+			}
 		}
 
 		size = Point2.Zero;

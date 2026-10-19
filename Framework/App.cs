@@ -541,7 +541,8 @@ public abstract class App : IDisposable
 		if (type == SDL_EventType.SDL_EVENT_DID_ENTER_FOREGROUND ||
 			type == SDL_EventType.SDL_EVENT_WILL_ENTER_FOREGROUND ||
 			type == SDL_EventType.SDL_EVENT_DID_ENTER_BACKGROUND ||
-			type == SDL_EventType.SDL_EVENT_WILL_ENTER_BACKGROUND)
+			type == SDL_EventType.SDL_EVENT_WILL_ENTER_BACKGROUND ||
+			type == SDL_EventType.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
 			GraphicsDevice.OnEvent(type);
 
 		if (type == SDL_EventType.SDL_EVENT_DID_ENTER_FOREGROUND)
