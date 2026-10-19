@@ -138,6 +138,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 	private readonly GraphicsDriver preferred = preferred;
 	private AppFlags flags;
 	private bool hasHostProperties; // AppConfig.GraphicsDeviceProperties was given
+	private bool depthClip;         // AppFlags.DepthClip or visionOS: no depth clamping feature, enable_depth_clip in every pipeline
 
 	public override GraphicsDriver Driver => driver;
 
@@ -225,6 +226,15 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, flags.Has(AppFlags.GraphicsDebugging));
 		if (requestedDriverName != null)
 			SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, requestedDriverName);
+
+		// Depth clip instead of depth clamp: SDL couples the device feature and the pipeline
+		// field (a pipeline with enable_depth_clip = false is rejected when the device was
+		// created without the clamping feature, and the Metal backend on visionOS rejects it
+		// always), so one switch sets both. On visionOS it is on regardless of the flag.
+		depthClip = flags.Has(AppFlags.DepthClip) || SDL_GetPlatform() == "visionOS";
+		if (depthClip)
+			SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_DEPTH_CLAMPING_BOOLEAN, false);
+
 		if (hostProperties != 0)
 			SDL_CopyProperties(hostProperties, props);
 		hasHostProperties = hostProperties != 0;
@@ -268,7 +278,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			var plus = fosterVersion.IndexOf('+');
 			if (plus > 0)
 				fosterVersion = fosterVersion[..plus];
-			Log.Info($"Foster visionOS kit: foster={fosterVersion} sdl={SDL_GetRevision()} driver={driverName} hostProperties={hasHostProperties} {Capabilities}");
+			Log.Info($"Foster visionOS kit: foster={fosterVersion} sdl={SDL_GetRevision()} driver={driverName} hostProperties={hasHostProperties} depthClip={depthClip} {Capabilities}");
 		}
 
 		// we always have a command buffer ready
@@ -1988,7 +1998,8 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 						_ => throw new NotImplementedException()
 					},
 					front_face = SDL_GPUFrontFace.SDL_GPU_FRONTFACE_CLOCKWISE,
-					enable_depth_bias = false
+					enable_depth_bias = false,
+					enable_depth_clip = self.depthClip
 				},
 				multisample_state = new()
 				{

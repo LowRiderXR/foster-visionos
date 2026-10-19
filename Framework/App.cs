@@ -76,6 +76,15 @@ public enum AppFlags
 	/// Doesn't log Foster's header (version number, gpu, SDL version, etc)
 	/// </summary>
 	NoHeaderLog = 1 << 2,
+
+	/// <summary>
+	/// Clips geometry at the near and far planes instead of clamping its depth (SDL_GPU's
+	/// default is clamping). SDL couples two settings that must agree, and Foster sets both:
+	/// the device is created without the depth clamping feature and every graphics pipeline
+	/// enables depth clip. Required on visionOS, where SDL's Metal backend rejects pipelines
+	/// without depth clip; Foster turns it on there automatically.
+	/// </summary>
+	DepthClip = 1 << 3,
 }
 
 /// <summary>
