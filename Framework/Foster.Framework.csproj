@@ -6,7 +6,7 @@
 
     <Title>Foster</Title>
     <Product>Foster</Product>
-    <Version>0.4.2</Version>
+    <Version>0.4.2-visionos.1</Version>
     <Authors>Noel Berry</Authors>
     <Description>A small cross-platform 2D-focused Game Framework</Description>
     <RepositoryType>git</RepositoryType>
@@ -54,8 +54,10 @@
       <Pack>True</Pack>
       <Link>%(Filename)%(Extension)</Link>
     </Content>
+    <!-- osx: the dylib is universal (x86_64 and arm64), so osx-arm64 gets it too; a referencing
+         project can bring its own SDL with FosterUseExternalSDL=true (SDL_GPU kit for visionOS). -->
     <Content Include="$(NativeLibsDir)osx\**" Visible="false">
-      <CopyToOutputDirectory Condition="('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))) or '$(RuntimeIdentifier)' == 'osx-x64'">PreserveNewest</CopyToOutputDirectory>
+      <CopyToOutputDirectory Condition="(('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))) or '$(RuntimeIdentifier)' == 'osx-x64' or '$(RuntimeIdentifier)' == 'osx-arm64') and '$(FosterUseExternalSDL)' != 'true'">PreserveNewest</CopyToOutputDirectory>
       <PackagePath>runtimes\osx\native</PackagePath>
       <Pack>True</Pack>
       <Link>%(Filename)%(Extension)</Link>

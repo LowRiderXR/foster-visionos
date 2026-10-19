@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using static SDL3.SDL;
 
@@ -159,6 +161,31 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			SDL_InsertGPUDebugLabel(cmdRender, text);
 	}
 
+	/// <summary>
+	/// Checks whether the loaded SDL library carries the exports of the SDL_GPU kit for visionOS.
+	/// The library handle comes from the same probing path LibraryImport uses, so the answer refers
+	/// to the SDL that is actually in use. Features that only the Metal backend implements
+	/// (external textures, memoryless, depth resolve) additionally require the Metal driver.
+	/// </summary>
+	private static GraphicsCapabilities ProbeCapabilities(GraphicsDriver driver)
+	{
+		bool kit = false;
+		if (NativeLibrary.TryLoad("SDL3", typeof(SDL3.SDL).Assembly, null, out var handle))
+		{
+			kit = NativeLibrary.TryGetExport(handle, KitExport_BeginGPURenderPassWithProperties, out _)
+			   && NativeLibrary.TryGetExport(handle, KitExport_GPUSupportsViewCount, out _);
+			// no NativeLibrary.Free: the library stays loaded for the P/Invokes anyway
+		}
+		var metal = driver == GraphicsDriver.Metal;
+		return new GraphicsCapabilities(
+			KitExports: kit,
+			MultiView: kit,
+			PassProperties: kit,
+			ExternalTextures: kit && metal,
+			Memoryless: kit && metal,
+			DepthResolve: kit && metal);
+	}
+
 	internal override void CreateDevice(in AppFlags flags)
 	{
 		if (device != nint.Zero)
@@ -209,6 +236,19 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 
 		if (!flags.Has(AppFlags.NoHeaderLog))
 			Log.Info($"Graphics Driver: SDL_GPU [{driverName}]");
+
+		// visionOS kit: probe the optional features of the loaded SDL (by export, not by version)
+		Capabilities = ProbeCapabilities(driver);
+		if (!flags.Has(AppFlags.NoHeaderLog))
+		{
+			// informational version carries the package version (0.4.2-visionos.N); SourceLink
+			// appends "+<commit>", which is cut off here
+			var fosterVersion = typeof(App).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? App.FosterVersion.ToString();
+			var plus = fosterVersion.IndexOf('+');
+			if (plus > 0)
+				fosterVersion = fosterVersion[..plus];
+			Log.Info($"Foster visionOS kit: foster={fosterVersion} sdl={SDL_GetRevision()} driver={driverName} {Capabilities}");
+		}
 
 		// we always have a command buffer ready
 		ResetCommandBufferState();

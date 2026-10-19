@@ -37,6 +37,12 @@ public abstract class GraphicsDevice
     /// </summary>
 	public DefaultResources Defaults { get; private set; }
 
+	/// <summary>
+	/// Optional features of the loaded graphics library (SDL_GPU kit for visionOS), probed when
+	/// the device is created. All false with a stock SDL.
+	/// </summary>
+	public GraphicsCapabilities Capabilities { get; protected set; } = GraphicsCapabilities.None;
+
 	internal GraphicsDevice(App app)
 	{
 		App = app;
