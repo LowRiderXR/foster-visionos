@@ -137,6 +137,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 
 	private readonly GraphicsDriver preferred = preferred;
 	private AppFlags flags;
+	private bool hasHostProperties; // AppConfig.GraphicsDeviceProperties was given
 
 	public override GraphicsDriver Driver => driver;
 
@@ -168,15 +169,22 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 	/// to the SDL that is actually in use. Features that only the Metal backend implements
 	/// (external textures, memoryless, depth resolve) additionally require the Metal driver.
 	/// </summary>
+	/// <summary>
+	/// True when the SDL3 library resolved for the P/Invokes exports the kit functions. Static, so
+	/// a host can ask before creating the App (GraphicsDevice.IsKitSDLLoaded).
+	/// </summary>
+	internal static bool ProbeKitExports()
+	{
+		if (!NativeLibrary.TryLoad("SDL3", typeof(SDL3.SDL).Assembly, null, out var handle))
+			return false;
+		// no NativeLibrary.Free: the library stays loaded for the P/Invokes anyway
+		return NativeLibrary.TryGetExport(handle, KitExport_BeginGPURenderPassWithProperties, out _)
+			&& NativeLibrary.TryGetExport(handle, KitExport_GPUSupportsViewCount, out _);
+	}
+
 	private static GraphicsCapabilities ProbeCapabilities(GraphicsDriver driver)
 	{
-		bool kit = false;
-		if (NativeLibrary.TryLoad("SDL3", typeof(SDL3.SDL).Assembly, null, out var handle))
-		{
-			kit = NativeLibrary.TryGetExport(handle, KitExport_BeginGPURenderPassWithProperties, out _)
-			   && NativeLibrary.TryGetExport(handle, KitExport_GPUSupportsViewCount, out _);
-			// no NativeLibrary.Free: the library stays loaded for the P/Invokes anyway
-		}
+		bool kit = ProbeKitExports();
 		var metal = driver == GraphicsDriver.Metal;
 		return new GraphicsCapabilities(
 			KitExports: kit,
@@ -187,7 +195,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			DepthResolve: kit && metal);
 	}
 
-	internal override void CreateDevice(in AppFlags flags)
+	internal override void CreateDevice(in AppFlags flags, uint hostProperties)
 	{
 		if (device != nint.Zero)
 			throw new Exception("GPU Device is already created");
@@ -204,16 +212,28 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			_ => null,
 		};
 
-		device = SDL_CreateGPUDevice(
-			format_flags:
-				SDL_GPUShaderFormat.SDL_GPU_SHADERFORMAT_SPIRV |
-				SDL_GPUShaderFormat.SDL_GPU_SHADERFORMAT_DXIL |
-				SDL_GPUShaderFormat.SDL_GPU_SHADERFORMAT_MSL,
-			debug_mode: flags.Has(AppFlags.GraphicsDebugging),
-			name: requestedDriverName!);
+		// The device is created through properties. Foster's defaults are what
+		// SDL_CreateGPUDevice(SPIRV | DXIL | MSL, debug, name) would set; properties the host
+		// passed in AppConfig.GraphicsDeviceProperties are copied over them, so the host wins on
+		// equal keys (including shader formats, if it sets them explicitly).
+		var props = SDL_CreateProperties();
+		if (props == 0)
+			throw App.CreateExceptionFromSDL(nameof(SDL_CreateProperties));
+		SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+		SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_DXIL_BOOLEAN, true);
+		SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
+		SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, flags.Has(AppFlags.GraphicsDebugging));
+		if (requestedDriverName != null)
+			SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, requestedDriverName);
+		if (hostProperties != 0)
+			SDL_CopyProperties(hostProperties, props);
+		hasHostProperties = hostProperties != 0;
+
+		device = SDL_CreateGPUDeviceWithProperties(props);
+		SDL_DestroyProperties(props);
 
 		if (device == IntPtr.Zero)
-			throw App.CreateExceptionFromSDL(nameof(SDL_CreateGPUDevice));
+			throw App.CreateExceptionFromSDL(nameof(SDL_CreateGPUDeviceWithProperties));
 
 		var driverName = SDL_GetGPUDeviceDriver(device);
 		driver = driverName switch
@@ -248,7 +268,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			var plus = fosterVersion.IndexOf('+');
 			if (plus > 0)
 				fosterVersion = fosterVersion[..plus];
-			Log.Info($"Foster visionOS kit: foster={fosterVersion} sdl={SDL_GetRevision()} driver={driverName} {Capabilities}");
+			Log.Info($"Foster visionOS kit: foster={fosterVersion} sdl={SDL_GetRevision()} driver={driverName} hostProperties={hasHostProperties} {Capabilities}");
 		}
 
 		// we always have a command buffer ready

@@ -57,7 +57,15 @@ public abstract class GraphicsDevice
 		Compute
 	}
 
-	internal abstract void CreateDevice(in AppFlags flags);
+	internal abstract void CreateDevice(in AppFlags flags, uint hostProperties);
+
+	/// <summary>
+	/// Whether the SDL library that will be loaded carries the exports of the SDL_GPU kit for
+	/// visionOS. Usable before an App exists, so a host can decide whether to pass kit-specific
+	/// properties in <see cref="AppConfig.GraphicsDeviceProperties"/>. Same probe as
+	/// <see cref="Capabilities"/>.KitExports.
+	/// </summary>
+	public static bool IsKitSDLLoaded() => GraphicsDeviceSDL.ProbeKitExports();
 	internal abstract void DestroyDevice();
 	internal abstract void Shutdown();
 	internal abstract void WindowCreated(Window window);

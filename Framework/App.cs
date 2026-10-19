@@ -19,6 +19,11 @@ namespace Foster.Framework;
 /// <param name="UpdateMode">An optional default Update Mode to initialize the App with</param>
 /// <param name="PreferredGraphicsDriver">The preferred graphics driver, or None to use the platform-default</param>
 /// <param name="Flags">Optional App Initialization Flags</param>
+/// <param name="GraphicsDeviceProperties">Optional SDL properties (an SDL_PropertiesID) that are
+/// merged into the properties Foster creates the GPU device with (SDL_CreateGPUDeviceWithProperties).
+/// Foster sets its defaults first (shader formats, debug mode, driver name); every key the host
+/// sets overrides them. 0 for none. The host keeps ownership and may destroy the properties after
+/// the App constructor returned.</param>
 public readonly record struct AppConfig
 (
 	string ApplicationName,
@@ -29,7 +34,8 @@ public readonly record struct AppConfig
 	bool Resizable = true,
 	UpdateMode? UpdateMode = null,
 	GraphicsDriver PreferredGraphicsDriver = GraphicsDriver.None,
-	AppFlags Flags = AppFlags.None
+	AppFlags Flags = AppFlags.None,
+	uint GraphicsDeviceProperties = 0
 );
 
 /// <summary>
@@ -250,7 +256,7 @@ public abstract class App : IDisposable
 		Input = inputProvider.Input;
 		FileSystem = new(this);
 		GraphicsDevice = new GraphicsDeviceSDL(this, config.PreferredGraphicsDriver);
-		GraphicsDevice.CreateDevice(config.Flags);
+		GraphicsDevice.CreateDevice(config.Flags, config.GraphicsDeviceProperties);
 		Window = new Window(this, config.WindowTitle, config.Width, config.Height, config.Fullscreen, config.Resizable);
 
 		// try to load default SDL gamepad mappings
