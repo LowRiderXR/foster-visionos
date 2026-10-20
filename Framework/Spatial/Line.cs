@@ -104,9 +104,17 @@ public struct Line(Vector2 from, Vector2 to) : IConvexShape, IEquatable<Line>
 		max = Math.Max(dot, max);
 	}
 
+	/// <summary>
+	/// Unclamped parameter of the point on the line closest to <paramref name="to"/>.
+	/// A degenerate line (From == To) has no direction; return 0 (the point itself) instead of
+	/// dividing 0 by 0, which would turn every later computation into NaN.
+	/// </summary>
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 	public readonly float ClosestTUnclamped(in Vector2 to)
-		=> Vector2.Dot(to - From, To - From) / (To - From).LengthSquared();
+	{
+		var lengthSquared = (To - From).LengthSquared();
+		return lengthSquared > 0 ? Vector2.Dot(to - From, To - From) / lengthSquared : 0;
+	}
 
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 	public readonly float ClosestT(in Vector2 to)
