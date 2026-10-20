@@ -165,14 +165,10 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 	}
 
 	/// <summary>
-	/// Checks whether the loaded SDL library carries the exports of the SDL_GPU kit for visionOS.
-	/// The library handle comes from the same probing path LibraryImport uses, so the answer refers
-	/// to the SDL that is actually in use. Features that only the Metal backend implements
-	/// (external textures, memoryless, depth resolve) additionally require the Metal driver.
-	/// </summary>
-	/// <summary>
-	/// True when the SDL3 library resolved for the P/Invokes exports the kit functions. Static, so
-	/// a host can ask before creating the App (GraphicsDevice.IsKitSDLLoaded).
+	/// True when the SDL3 library that the P/Invokes resolve to exports the functions of the
+	/// SDL_GPU kit for visionOS. The library handle comes from the same probing path LibraryImport
+	/// uses, so the answer refers to the SDL that is actually in use. Static, so a host can ask
+	/// before the App exists (GraphicsDevice.IsKitSDLLoaded).
 	/// </summary>
 	internal static bool ProbeKitExports()
 	{
@@ -183,6 +179,11 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			&& NativeLibrary.TryGetExport(handle, KitExport_GPUSupportsViewCount, out _);
 	}
 
+	/// <summary>
+	/// Derives the optional features from the kit exports and the driver. Features that only the
+	/// Metal backend implements (external textures, memoryless, depth resolve) additionally require
+	/// the Metal driver; multiview and pass properties follow the exports alone.
+	/// </summary>
 	private static GraphicsCapabilities ProbeCapabilities(GraphicsDriver driver)
 	{
 		bool kit = ProbeKitExports();
@@ -272,12 +273,9 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		Capabilities = ProbeCapabilities(driver);
 		if (!flags.Has(AppFlags.NoHeaderLog))
 		{
-			// informational version carries the package version (0.4.2-visionos.N); SourceLink
-			// appends "+<commit>", which is cut off here
+			// informational version: package version (0.4.2-visionos.N) plus "+<commit>" from
+			// SourceLink, kept so a log names the exact fork commit
 			var fosterVersion = typeof(App).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? App.FosterVersion.ToString();
-			var plus = fosterVersion.IndexOf('+');
-			if (plus > 0)
-				fosterVersion = fosterVersion[..plus];
 			Log.Info($"Foster visionOS kit: foster={fosterVersion} sdl={SDL_GetRevision()} driver={driverName} hostProperties={hasHostProperties} depthClip={depthClip} {Capabilities}");
 		}
 

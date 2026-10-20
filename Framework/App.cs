@@ -23,7 +23,9 @@ namespace Foster.Framework;
 /// merged into the properties Foster creates the GPU device with (SDL_CreateGPUDeviceWithProperties).
 /// Foster sets its defaults first (shader formats, debug mode, driver name); every key the host
 /// sets overrides them. 0 for none. The host keeps ownership and may destroy the properties after
-/// the App constructor returned.</param>
+/// the App constructor returned. The merge uses SDL_CopyProperties, which skips properties that
+/// were set with a cleanup callback (SDL_SetPointerPropertyWithCleanup); use plain pointer
+/// properties.</param>
 public readonly record struct AppConfig
 (
 	string ApplicationName,
