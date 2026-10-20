@@ -87,6 +87,13 @@ public enum AppFlags
 	/// without depth clip; Foster turns it on there automatically.
 	/// </summary>
 	DepthClip = 1 << 3,
+
+	/// <summary>
+	/// Keeps the windows hidden when the host drives the loop through <see cref="App.Begin"/>,
+	/// for hosts that present the rendered image themselves (a compositor) and have no use for
+	/// a window on screen. <see cref="App.Run"/> ignores this flag and shows the windows.
+	/// </summary>
+	HiddenWindow = 1 << 4,
 }
 
 /// <summary>
@@ -381,6 +388,100 @@ public abstract class App : IDisposable
 	}
 
 	/// <summary>
+	/// Host-driven loop, part one: the equivalent of what <see cref="Run"/> does before its first
+	/// frame. Marks the Application as running, resets <see cref="Time"/>, polls events once so the
+	/// input has controller state, shows the windows (unless <see cref="AppFlags.HiddenWindow"/> is
+	/// set) and calls <see cref="Startup"/>. Afterwards the host calls <see cref="Tick(TimeSpan, bool)"/>
+	/// once per frame of its own clock and <see cref="End"/> when <see cref="Exiting"/> is set or the
+	/// host stops. <see cref="Run"/> stays the default for applications without a host.
+	/// </summary>
+	public void Begin()
+	{
+		if (Disposed)
+			throw DisposedException;
+		if (Running)
+			throw new Exception("Application is already running");
+		if (Exiting)
+			throw new Exception("Application is still exiting");
+
+		Running = true;
+		Time = new();
+		lastUpdateTime = TimeSpan.Zero;
+		fixedAccumulator = TimeSpan.Zero;
+		timer.Restart();
+
+		try
+		{
+			// poll events once, so input has controller state before Startup
+			PollEvents();
+			inputProvider.Update(Time);
+			if (!config.Flags.Has(AppFlags.HiddenWindow))
+			{
+				foreach (var window in windows)
+					window.Show();
+			}
+			Startup();
+		}
+		catch
+		{
+			Running = false;
+			Exiting = false;
+			throw;
+		}
+	}
+
+	/// <summary>
+	/// Host-driven loop, part two: exactly one frame. Polls events, runs one <see cref="Update"/>
+	/// with the given delta (the <see cref="UpdateMode"/> is not used, the host owns the clock),
+	/// renders, and presents to the windows. With present set to false the rendered commands are
+	/// still submitted to the GPU (so render targets the host reads are complete), but nothing is
+	/// presented to a window; for hosts that show the image themselves.
+	/// </summary>
+	public void Tick(TimeSpan delta, bool present = true)
+	{
+		if (!Running)
+			throw NotRunningException;
+
+		Step(delta);
+
+		Time = Time.AdvanceRenderFrame();
+		Render();
+		if (present)
+			GraphicsDevice.Present();
+		else
+			GraphicsDevice.Flush();
+
+		DestroyWaitingWindows();
+	}
+
+	/// <summary>
+	/// Host-driven loop, part three: the equivalent of what <see cref="Run"/> does after its loop.
+	/// Runs the queued main-thread actions, calls <see cref="Shutdown"/>, hides the windows and
+	/// closes the input devices; afterwards the Application is no longer running.
+	/// </summary>
+	public void End()
+	{
+		if (!Running)
+			throw NotRunningException;
+
+		try
+		{
+			while (mainThreadQueue.TryDequeue(out var action))
+				action.Invoke();
+
+			Shutdown();
+			foreach (var window in windows)
+				window.Hide();
+			inputProvider.CloseDevices();
+		}
+		finally
+		{
+			Running = false;
+			Exiting = false;
+		}
+	}
+
+	/// <summary>
 	/// Notifies the Application to Exit.
 	/// The Application may finish the current frame before exiting.
 	/// </summary>
@@ -471,26 +572,31 @@ public abstract class App : IDisposable
 		}
 	}
 
+	/// <summary>
+	/// One update step: advances <see cref="Time"/> by delta, polls input and events, runs the
+	/// queued main-thread actions and calls <see cref="Update"/>. Used by <see cref="Run"/>'s
+	/// loop (through the UpdateMode) and by the host-driven <see cref="Tick(TimeSpan, bool)"/>.
+	/// </summary>
+	private void Step(TimeSpan delta)
+	{
+		Time = Time.Advance(delta);
+
+		// warp mouse to center of the window if Relative Mode is enabled
+		if (SDL_GetWindowRelativeMouseMode(Window.Handle) && Window.Focused)
+			SDL_WarpMouseInWindow(Window.Handle, Window.Width / 2, Window.Height / 2);
+
+		inputProvider.Update(Time);
+		PollEvents();
+		FramePool.NextFrame();
+
+		while (mainThreadQueue.TryDequeue(out var action))
+			action.Invoke();
+
+		Update();
+	}
+
 	private void Tick()
 	{
-		void Step(TimeSpan delta)
-		{
-			Time = Time.Advance(delta);
-
-			// warp mouse to center of the window if Relative Mode is enabled
-			if (SDL_GetWindowRelativeMouseMode(Window.Handle) && Window.Focused)
-				SDL_WarpMouseInWindow(Window.Handle, Window.Width / 2, Window.Height / 2);
-
-			inputProvider.Update(Time);
-			PollEvents();
-			FramePool.NextFrame();
-
-			while (mainThreadQueue.TryDequeue(out var action))
-				action.Invoke();
-
-			Update();
-		}
-
 		var update = UpdateMode;
 		var currentTime = timer.Elapsed;
 		var deltaTime = currentTime - lastUpdateTime;

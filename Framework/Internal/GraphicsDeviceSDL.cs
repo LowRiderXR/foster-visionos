@@ -457,6 +457,13 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		driver = GraphicsDriver.None;
 	}
 
+	internal override void Flush()
+	{
+		EndCopyPass();
+		EndRenderPass();
+		FlushCommands(stall: false);
+	}
+
 	internal override void Present()
 	{
 		EndCopyPass();

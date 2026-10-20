@@ -71,6 +71,8 @@ public abstract class GraphicsDevice
 	internal abstract void WindowCreated(Window window);
 	internal abstract void WindowDestroyed(Window window);
 	internal abstract void Present();
+	/// <summary>Ends the open passes and submits the recorded commands without presenting to a window (host-driven loop without present).</summary>
+	internal abstract void Flush();
 	internal abstract void OnEvent(SDL3.SDL.SDL_EventType type);
 
 	internal abstract ResourceHandle CreateTexture(string? name, int width, int height, TextureFormat format, TextureFlags flags, SampleCount sampleCount, nint? targetBinding);
