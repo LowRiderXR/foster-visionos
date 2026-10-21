@@ -97,6 +97,7 @@ public class Target : IGraphicResource, IDrawableTarget
 
 		var first = attachments[0];
 		var hasColor = false;
+		var depthCount = 0;
 		Span<GraphicsDevice.ResourceHandle> handles = stackalloc GraphicsDevice.ResourceHandle[attachments.Length];
 		for (int i = 0; i < attachments.Length; i++)
 		{
@@ -115,10 +116,14 @@ public class Target : IGraphicResource, IDrawableTarget
 				throw new ArgumentException($"Attachment {i} was not created with TextureFlags.RenderTarget");
 			if (!it.Format.IsDepthStencilFormat())
 				hasColor = true;
+			else
+				depthCount++;
 			handles[i] = it.Resource;
 		}
 		if (!hasColor)
 			throw new ArgumentException("Target needs at least 1 color attachment");
+		if (depthCount > 1)
+			throw new ArgumentException($"Target supports at most one depth attachment, {depthCount} were given");
 		if (layer < 0 || layer >= first.Layers)
 			throw new ArgumentOutOfRangeException(nameof(layer), $"Layer {layer} is out of range, the attachments have {first.Layers} layer(s)");
 

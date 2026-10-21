@@ -704,17 +704,16 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 				"External textures (SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER) need the SDL_GPU kit for visionOS " +
 				$"with the Metal driver; the loaded SDL reports {Capabilities}");
 
-		// caller properties are used as they are (and stay owned by the caller); otherwise
-		// Foster creates its own set for the debug name
+		// caller properties stay untouched and owned by the caller; for the debug name Foster
+		// works on its own set (a copy of the caller's, if any)
 		uint props = properties;
 		bool ownProps = false;
 		if (!string.IsNullOrEmpty(name))
 		{
-			if (props == 0)
-			{
-				props = SDL_CreateProperties();
-				ownProps = true;
-			}
+			props = SDL_CreateProperties();
+			ownProps = true;
+			if (properties != 0)
+				SDL_CopyProperties(properties, props);
 			SDL_SetStringProperty(props, SDL_PROP_GPU_TEXTURE_CREATE_NAME_STRING, name);
 		}
 
