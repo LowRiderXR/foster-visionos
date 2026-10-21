@@ -82,7 +82,7 @@ public abstract class GraphicsDevice
 	internal abstract void SetTextureData(ResourceHandle texture, nint data, int length, RectInt destRegion, int layer = 0);
 	internal abstract void GetTextureData(ResourceHandle texture, nint data, int length, RectInt sourceRegion, int layer = 0);
 	internal abstract void BlitTexture(ResourceHandle sourceTexture, RectInt sourceRegion, ResourceHandle destTexture, RectInt destRegion, TextureFilter filter, int sourceLayer = 0, int destLayer = 0);
-	internal abstract ResourceHandle CreateTarget(int width, int height);
+	internal abstract ResourceHandle CreateTarget(int width, int height, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0);
 	/// <summary>Registers a Target over existing Textures; the Target renders into <paramref name="layer"/> and does not own the attachments.</summary>
 	internal abstract ResourceHandle CreateTarget(ReadOnlySpan<ResourceHandle> attachments, int layer);
 	internal abstract ResourceHandle CreateShader(Shader shader, byte[] code, string entryPoint);
@@ -171,6 +171,12 @@ public abstract class GraphicsDevice
 		for (int i = 0; i < command.FragmentSamplers.Count; i++)
 			if (command.FragmentSamplers[i].Texture is { IsArray: true } arr)
 				throw new InvalidOperationException($"Texture '{arr.Name}' is a 2D array with {arr.Layers} layers and cannot be sampled as a 2D texture (fragment sampler {i})");
+
+		// a multisampled depth texture can only be sampled through its resolved copy, which
+		// needs the depth resolve of the SDL_GPU kit; without it the copy is never written
+		for (int i = 0; i < command.FragmentSamplers.Count; i++)
+			if (command.FragmentSamplers[i].Texture is { } dt && dt.SampleCount != SampleCount.One && dt.Format.IsDepthStencilFormat() && !Capabilities.DepthResolve)
+				throw new NotSupportedException($"Texture '{dt.Name}' is a multisampled depth texture; sampling it needs the depth resolve of the SDL_GPU kit for visionOS (GraphicsCapabilities.DepthResolve), the loaded SDL reports {Capabilities}");
 
 		// validate storage buffers
 		for (int i = 0; i < command.VertexStorageBuffers.Count; i ++)

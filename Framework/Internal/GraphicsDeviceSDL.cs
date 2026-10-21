@@ -60,6 +60,21 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		/// False for a Target over existing textures: destroying the Target leaves them alone.
 		/// </summary>
 		public bool OwnsAttachments = true;
+
+		/// <summary>
+		/// Multisampled color: RESOLVE_AND_STORE (true) or RESOLVE only (false).
+		/// </summary>
+		public bool MultiSampleStore = true;
+
+		/// <summary>
+		/// Filter for resolving a multisampled depth attachment into its sampled copy.
+		/// </summary>
+		public DepthResolveFilter DepthResolve;
+
+		/// <summary>
+		/// Render pass properties for the depth resolve (SDL_GPU kit), created on first use.
+		/// </summary>
+		public uint PassProperties;
 	}
 
 	private class BufferResource(GraphicsDeviceSDL graphicsDevice, string? name, SDL_GPUBufferUsageFlags usage, IndexFormat indexFormat)
@@ -1028,9 +1043,9 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		});
 	}
 
-	internal override ResourceHandle CreateTarget(int width, int height)
+	internal override ResourceHandle CreateTarget(int width, int height, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0)
 	{
-		return RegisterResource(new TargetResource(this));
+		return RegisterResource(new TargetResource(this) { MultiSampleStore = multiSampleStore, DepthResolve = depthResolve });
 	}
 
 	internal override ResourceHandle CreateTarget(ReadOnlySpan<ResourceHandle> attachments, int layer)
@@ -1328,6 +1343,8 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 				if (tar.OwnsAttachments)
 					foreach (var att in tar.Attachments)
 						DestroyResource(att);
+				if (tar.PassProperties != 0)
+					SDL_DestroyProperties(tar.PassProperties);
 			}
 			else if (it is BufferResource buf)
 			{
@@ -1357,6 +1374,8 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			return RequireResource<TextureResource>(emptyDefaultTexture).SamplerTexture;
 		if (res.Layers > 1)
 			throw new InvalidOperationException($"Texture '{texture!.Name}' is a 2D array with {res.Layers} layers and cannot be sampled as a 2D texture");
+		if (res.SampleCount != SDL_GPUSampleCount.SDL_GPU_SAMPLECOUNT_1 && texture!.Format.IsDepthStencilFormat() && !Capabilities.DepthResolve)
+			throw new NotSupportedException($"Texture '{texture.Name}' is a multisampled depth texture; sampling it needs the depth resolve of the SDL_GPU kit for visionOS (GraphicsCapabilities.DepthResolve), the loaded SDL reports {Capabilities}");
 		return res.SamplerTexture;
 	}
 
@@ -1847,8 +1866,11 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		// configure lists of textures used
 		renderPassTarget = drawableTarget;
 
-		// the array layer the pass writes into (0 for plain 2D targets)
-		var layer = FindResource<TargetResource>(target.Resource)?.Layer ?? 0;
+		// the array layer the pass writes into (0 for plain 2D targets) and the MSAA options
+		var targetRes = FindResource<TargetResource>(target.Resource);
+		var layer = targetRes?.Layer ?? 0;
+		var multiSampleStore = targetRes?.MultiSampleStore ?? true;
+		TextureResource? depthRes = null;
 		var colorTargets = new StackList8<(nint Attachment, nint Resolve)>();
 		var depthStencilTarget = nint.Zero;
 
@@ -1856,7 +1878,10 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		{
 			var tex = RequireResource<TextureResource>(it.Resource);
 			if (it.Format.IsDepthStencilFormat())
+			{
 				depthStencilTarget = tex.Texture;
+				depthRes = tex;
+			}
 			else
 			{
 				var resolve = FindResource<TextureResource>(tex.MultiSampleResolve)?.Texture ?? nint.Zero;
@@ -1879,8 +1904,10 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 				load_op = clear.Color.HasValue ?
 					SDL_GPULoadOp.SDL_GPU_LOADOP_CLEAR :
 					SDL_GPULoadOp.SDL_GPU_LOADOP_LOAD,
-				store_op = colorTargets[i].Resolve == nint.Zero ?
-					SDL_GPUStoreOp.SDL_GPU_STOREOP_STORE :
+				// multisampled: resolve, and keep the samples unless the Target opts out, so a
+				// later pass on the same Target can LOAD them (RESOLVE alone leaves them undefined)
+				store_op = colorTargets[i].Resolve == nint.Zero ? SDL_GPUStoreOp.SDL_GPU_STOREOP_STORE :
+					multiSampleStore ? SDL_GPUStoreOp.SDL_GPU_STOREOP_RESOLVE_AND_STORE :
 					SDL_GPUStoreOp.SDL_GPU_STOREOP_RESOLVE,
 				cycle = clear.Color.HasValue,
 				resolve_texture = colorTargets[i].Resolve
@@ -1912,6 +1939,27 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 				layer = (byte)layer,
 			};
 			depthTarget = ref depthValue;
+		}
+
+		// multisampled depth: resolve it into its single-sample copy through the kit's render
+		// pass properties, so the copy that shaders sample is written (STORE keeps the samples)
+		var depthResolve = depthRes != null && depthRes.SampleCount != SDL_GPUSampleCount.SDL_GPU_SAMPLECOUNT_1 && depthRes.MultiSampleResolve
+			? FindResource<TextureResource>(depthRes.MultiSampleResolve) : null;
+		if (depthResolve != null && Capabilities.DepthResolve && targetRes != null)
+		{
+			if (targetRes.PassProperties == 0)
+				targetRes.PassProperties = SDL_CreateProperties();
+			var props = targetRes.PassProperties;
+			SDL_SetPointerProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_TEXTURE_POINTER, depthResolve.Texture);
+			SDL_SetNumberProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_LAYER_NUMBER, layer);
+			SDL_SetStringProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_FILTER_STRING, targetRes.DepthResolve switch
+			{
+				DepthResolveFilter.Min => "min",
+				DepthResolveFilter.Max => "max",
+				_ => "sample0",
+			});
+			renderPass = SDL_BeginGPURenderPassWithProperties(cmdRender, colorInfo, (uint)colorTargets.Count, depthTarget, props);
+			return renderPass != nint.Zero;
 		}
 
 		// begin pass

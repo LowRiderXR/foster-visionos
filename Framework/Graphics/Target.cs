@@ -53,6 +53,21 @@ public class Target : IGraphicResource, IDrawableTarget
 	/// </summary>
 	public readonly bool OwnsAttachments;
 
+	/// <summary>
+	/// For multisampled color attachments: true (default) keeps the samples after a render
+	/// pass in addition to resolving them (RESOLVE_AND_STORE), so a later pass on the same
+	/// Target can load them; false only resolves (RESOLVE), which is enough for Targets that
+	/// are drawn in a single pass and required for memoryless attachments.
+	/// </summary>
+	public readonly bool MultiSampleStore = true;
+
+	/// <summary>
+	/// For a multisampled depth attachment: the filter used to resolve it into the
+	/// single-sample copy that shaders sample. Needs <see cref="GraphicsCapabilities.DepthResolve"/>;
+	/// without it a multisampled depth texture cannot be sampled.
+	/// </summary>
+	public readonly DepthResolveFilter DepthResolve = DepthResolveFilter.Sample0;
+
 	object? IDrawableTarget.Surface => this;
 	int IDrawableTarget.WidthInPixels => Width;
 	int IDrawableTarget.HeightInPixels => Height;
@@ -76,8 +91,8 @@ public class Target : IGraphicResource, IDrawableTarget
 	/// <summary>
 	/// Constructs a Target with the given Attachments
 	/// </summary>
-	public Target(GraphicsDevice graphicsDevice, int width, int height, in ReadOnlySpan<(TextureFormat Format, TextureFlags Flags, SampleCount SampleCount)> attachments, string? name = null)
-		: this(graphicsDevice, width, height, GetAttachments(attachments), name) {}
+	public Target(GraphicsDevice graphicsDevice, int width, int height, in ReadOnlySpan<(TextureFormat Format, TextureFlags Flags, SampleCount SampleCount)> attachments, string? name = null, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0)
+		: this(graphicsDevice, width, height, GetAttachments(attachments), name, multiSampleStore, depthResolve) {}
 
 	/// <summary>
 	/// Constructs a Target over existing Textures without creating new ones. All attachments
@@ -136,7 +151,7 @@ public class Target : IGraphicResource, IDrawableTarget
 		Resource = GraphicsDevice.CreateTarget(handles, layer);
 	}
 
-	private Target(GraphicsDevice graphicsDevice, int width, int height, in StackList16<(TextureFormat Format, TextureFlags Flags, SampleCount SampleCount)> attachments, string? name = null)
+	private Target(GraphicsDevice graphicsDevice, int width, int height, in StackList16<(TextureFormat Format, TextureFlags Flags, SampleCount SampleCount)> attachments, string? name = null, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0)
 	{
 		// set first: the finalizer disposes through the device even if a check below throws
 		GraphicsDevice = graphicsDevice;
@@ -148,7 +163,9 @@ public class Target : IGraphicResource, IDrawableTarget
 		if (attachments.Count <= 0)
 			throw new ArgumentException("Target needs at least 1 color attachment");
 
-		Resource = GraphicsDevice.CreateTarget(width, height);
+		MultiSampleStore = multiSampleStore;
+		DepthResolve = depthResolve;
+		Resource = GraphicsDevice.CreateTarget(width, height, multiSampleStore, depthResolve);
 		Width = width;
 		Height = height;
 		Bounds = new RectInt(0, 0, Width, Height);
