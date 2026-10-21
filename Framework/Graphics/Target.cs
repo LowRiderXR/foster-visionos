@@ -54,6 +54,38 @@ public class Target : IGraphicResource, IDrawableTarget
 	public readonly bool OwnsAttachments;
 
 	/// <summary>
+	/// Sample count of the render pass. For a Target over existing textures above one, Foster
+	/// owns multisampled copies of the attachments and resolves into the existing textures.
+	/// </summary>
+	public readonly SampleCount SampleCount = SampleCount.One;
+
+	/// <summary>
+	/// True if the multisampled color attachments are memoryless (tile memory only, SDL_GPU
+	/// kit): every pass on this Target must start with a clear, and the samples are only
+	/// resolved, never stored (<see cref="MultiSampleStore"/> must be false).
+	/// </summary>
+	public readonly bool ColorMemoryless;
+
+	/// <summary>
+	/// True if the multisampled depth attachment is memoryless: it is resolved into the
+	/// existing depth texture at the end of the pass and discarded; a later pass on this
+	/// Target cannot load it, so every pass must clear depth.
+	/// </summary>
+	public readonly bool DepthMemoryless;
+
+	/// <summary>
+	/// Foster-owned multisampled copies of <see cref="Attachments"/> (Targets over existing
+	/// textures with a sample count above one); the render pass draws into these and resolves
+	/// into the attachments.
+	/// </summary>
+	internal readonly Texture[]? MultiSampleAttachments;
+
+	/// <summary>
+	/// The textures a render pass actually binds.
+	/// </summary>
+	internal Texture[] RenderAttachments => MultiSampleAttachments ?? Attachments;
+
+	/// <summary>
 	/// For multisampled color attachments: true (default) keeps the samples after a render
 	/// pass in addition to resolving them (RESOLVE_AND_STORE), so a later pass on the same
 	/// Target can load them; false only resolves (RESOLVE), which is enough for Targets that
@@ -102,6 +134,24 @@ public class Target : IGraphicResource, IDrawableTarget
 	/// <paramref name="layer"/> of every attachment. The Target does not own the Textures.
 	/// </summary>
 	public Target(GraphicsDevice graphicsDevice, ReadOnlySpan<Texture> attachments, int layer = 0, string? name = null)
+		: this(graphicsDevice, attachments, layer, SampleCount.One, true, DepthResolveFilter.Sample0, false, false, name) {}
+
+	/// <summary>
+	/// Constructs a multisampled Target over existing single-sample Textures: Foster creates
+	/// the multisampled attachments itself (same format, size and layer count) and resolves
+	/// them into the existing Textures at the end of each pass, color through the pass's
+	/// resolve texture, depth through the SDL_GPU kit's depth resolve with
+	/// <paramref name="depthResolve"/>, each into <paramref name="layer"/>. This is the way
+	/// onto the compositor drawables of visionOS. Options: <paramref name="multiSampleStore"/>
+	/// keeps the color samples for a later pass (default true, like every other Target: a
+	/// forgotten setting costs bandwidth, never correctness; set false for single-pass targets);
+	/// <paramref name="colorMemoryless"/> and <paramref name="depthMemoryless"/> keep the
+	/// samples in tile memory only (needs <see cref="GraphicsCapabilities.Memoryless"/>; color
+	/// requires <paramref name="multiSampleStore"/> set to false explicitly; every pass must
+	/// then start with a clear of the memoryless attachments). Multisampled arrays and the depth resolve need the
+	/// SDL_GPU kit; without it a <see cref="NotSupportedException"/> names what is missing.
+	/// </summary>
+	public Target(GraphicsDevice graphicsDevice, ReadOnlySpan<Texture> attachments, int layer, SampleCount sampleCount, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0, bool colorMemoryless = false, bool depthMemoryless = false, string? name = null)
 	{
 		// set first: the finalizer disposes through the device even if a check below throws
 		GraphicsDevice = graphicsDevice;
@@ -142,13 +192,51 @@ public class Target : IGraphicResource, IDrawableTarget
 		if (layer < 0 || layer >= first.Layers)
 			throw new ArgumentOutOfRangeException(nameof(layer), $"Layer {layer} is out of range, the attachments have {first.Layers} layer(s)");
 
+		// multisampled over existing textures: what the combination needs, with a clear message
+		var caps = graphicsDevice.Capabilities;
+		if (sampleCount == SampleCount.One)
+		{
+			if (colorMemoryless || depthMemoryless)
+				throw new ArgumentException("Memoryless attachments need a sample count above one; single-sample attachments are the existing textures themselves");
+		}
+		else
+		{
+			if (first.Layers > 1 && !caps.KitExports)
+				throw new NotSupportedException($"Multisampled array textures need the SDL_GPU kit for visionOS; the loaded SDL reports {caps}");
+			if (depthCount > 0 && !caps.DepthResolve)
+				throw new NotSupportedException($"Resolving a multisampled depth attachment into an existing depth texture needs the depth resolve of the SDL_GPU kit (GraphicsCapabilities.DepthResolve); the loaded SDL reports {caps}");
+			if ((colorMemoryless || depthMemoryless) && !caps.Memoryless)
+				throw new NotSupportedException($"Memoryless attachments need the SDL_GPU kit for visionOS with the Metal driver (GraphicsCapabilities.Memoryless); the loaded SDL reports {caps}");
+			if (colorMemoryless && multiSampleStore)
+				throw new ArgumentException("Memoryless color attachments cannot keep their samples: set multiSampleStore to false (RESOLVE only) or make the color not memoryless");
+		}
+
 		Width = first.Width;
 		Height = first.Height;
 		Bounds = new RectInt(0, 0, Width, Height);
 		Attachments = attachments.ToArray();
 		Layer = layer;
 		OwnsAttachments = false;
-		Resource = GraphicsDevice.CreateTarget(handles, layer);
+		SampleCount = sampleCount;
+		MultiSampleStore = sampleCount == SampleCount.One || multiSampleStore;
+		DepthResolve = depthResolve;
+		ColorMemoryless = sampleCount != SampleCount.One && colorMemoryless;
+		DepthMemoryless = sampleCount != SampleCount.One && depthMemoryless;
+		Resource = GraphicsDevice.CreateTarget(handles, layer, MultiSampleStore, depthResolve);
+
+		if (sampleCount != SampleCount.One)
+		{
+			// Foster-owned multisampled copies, each resolving into its existing texture
+			MultiSampleAttachments = new Texture[Attachments.Length];
+			for (int i = 0; i < Attachments.Length; i++)
+			{
+				var it = Attachments[i];
+				var isDepth = it.Format.IsDepthStencilFormat();
+				var attachmentName = !string.IsNullOrEmpty(name) ? $"{Name}-MSAA{i}" : null;
+				MultiSampleAttachments[i] = new Texture(graphicsDevice, Width, Height, it.Format, TextureFlags.None, sampleCount, this, attachmentName, it.Layers, 0,
+					resolveInto: it.Resource, memoryless: isDepth ? DepthMemoryless : ColorMemoryless);
+			}
+		}
 	}
 
 	private Target(GraphicsDevice graphicsDevice, int width, int height, in StackList16<(TextureFormat Format, TextureFlags Flags, SampleCount SampleCount)> attachments, string? name = null, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0)

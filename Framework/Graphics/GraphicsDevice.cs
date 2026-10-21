@@ -78,13 +78,16 @@ public abstract class GraphicsDevice
 	// layers: 1 for a 2D texture, above 1 for a 2D array. properties: SDL properties passed to
 	// SDL_CreateGPUTexture (0 for none); a property naming an existing native texture makes this
 	// an external texture, which needs GraphicsCapabilities.ExternalTextures.
-	internal abstract ResourceHandle CreateTexture(string? name, int width, int height, TextureFormat format, TextureFlags flags, SampleCount sampleCount, nint? targetBinding, int layers = 1, uint properties = 0);
+	// resolveInto: an existing single-sample texture that a multisampled texture resolves into
+	// (same format, size and layers) instead of a Foster-created copy. memoryless: tile-only
+	// multisampled attachment (SDL_GPU kit), no load, no store, no copies.
+	internal abstract ResourceHandle CreateTexture(string? name, int width, int height, TextureFormat format, TextureFlags flags, SampleCount sampleCount, nint? targetBinding, int layers = 1, uint properties = 0, ResourceHandle? resolveInto = null, bool memoryless = false);
 	internal abstract void SetTextureData(ResourceHandle texture, nint data, int length, RectInt destRegion, int layer = 0);
 	internal abstract void GetTextureData(ResourceHandle texture, nint data, int length, RectInt sourceRegion, int layer = 0);
 	internal abstract void BlitTexture(ResourceHandle sourceTexture, RectInt sourceRegion, ResourceHandle destTexture, RectInt destRegion, TextureFilter filter, int sourceLayer = 0, int destLayer = 0);
 	internal abstract ResourceHandle CreateTarget(int width, int height, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0);
 	/// <summary>Registers a Target over existing Textures; the Target renders into <paramref name="layer"/> and does not own the attachments.</summary>
-	internal abstract ResourceHandle CreateTarget(ReadOnlySpan<ResourceHandle> attachments, int layer);
+	internal abstract ResourceHandle CreateTarget(ReadOnlySpan<ResourceHandle> attachments, int layer, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0);
 	internal abstract ResourceHandle CreateShader(Shader shader, byte[] code, string entryPoint);
 	internal abstract ResourceHandle CreateBuffer(string? name, BufferType type, IndexFormat format);
 	internal abstract void UploadBufferData(ResourceHandle buffer, nint data, int dataSize, int dataDestOffset);

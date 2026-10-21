@@ -77,6 +77,12 @@ public class Texture : IGraphicResource
 	/// </summary>
 	public bool IsArray => Layers > 1;
 
+	/// <summary>
+	/// True for a memoryless multisampled attachment (tile memory only, SDL_GPU kit): it has no
+	/// contents outside its render pass, cannot be loaded, stored, copied or read back.
+	/// </summary>
+	public readonly bool IsMemoryless;
+
 	internal readonly GraphicsDevice.ResourceHandle Resource;
 
 	private bool disposed;
@@ -109,7 +115,7 @@ public class Texture : IGraphicResource
 	public Texture(GraphicsDevice graphicsDevice, int width, int height, TextureFormat format, int layers, TextureFlags flags = TextureFlags.None, uint properties = 0, string? name = null)
 		: this(graphicsDevice, width, height, format, flags, SampleCount.One, targetBinding: null, name, layers, properties) {}
 
-	internal Texture(GraphicsDevice graphicsDevice, int width, int height, TextureFormat format, TextureFlags flags, SampleCount sampleCount, Target? targetBinding, string? name, int layers = 1, uint properties = 0)
+	internal Texture(GraphicsDevice graphicsDevice, int width, int height, TextureFormat format, TextureFlags flags, SampleCount sampleCount, Target? targetBinding, string? name, int layers = 1, uint properties = 0, GraphicsDevice.ResourceHandle? resolveInto = null, bool memoryless = false)
 	{
 		GraphicsDevice = graphicsDevice;
 
@@ -119,7 +125,8 @@ public class Texture : IGraphicResource
 		if (layers <= 0)
 			throw new ArgumentOutOfRangeException(nameof(layers), "Texture must have at least 1 layer");
 
-		Resource = graphicsDevice.CreateTexture(name, width, height, format, flags, sampleCount, targetBinding?.Resource, layers, properties);
+		Resource = graphicsDevice.CreateTexture(name, width, height, format, flags, sampleCount, targetBinding?.Resource, layers, properties, resolveInto, memoryless);
+		IsMemoryless = memoryless;
 		Name = name ?? string.Empty;
 		Width = width;
 		Height = height;

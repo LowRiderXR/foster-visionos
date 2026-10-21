@@ -35,9 +35,19 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		public bool External;
 
 		/// <summary>
+		/// Memoryless multisampled attachment (tile memory only): no load, no store, no copies.
+		/// </summary>
+		public bool Memoryless;
+
+		/// <summary>
 		/// If we are multisampled, we need a resolve texture
 		/// </summary>
 		public ResourceHandle MultiSampleResolve;
+
+		/// <summary>
+		/// False if the resolve texture is an existing texture of the caller (not destroyed with us).
+		/// </summary>
+		public bool OwnsResolve = true;
 
 		/// <summary>
 		/// If we are multisampled, we should sample from the resolve texture,
@@ -52,14 +62,15 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		public readonly List<ResourceHandle> Attachments = [];
 
 		/// <summary>
+		/// The attachments Foster created for this Target (destroyed with it); a Target over
+		/// existing textures owns only its multisampled copies, if any.
+		/// </summary>
+		public readonly List<ResourceHandle> Owned = [];
+
+		/// <summary>
 		/// Array layer the render pass writes into (color slice and depth layer).
 		/// </summary>
 		public int Layer;
-
-		/// <summary>
-		/// False for a Target over existing textures: destroying the Target leaves them alone.
-		/// </summary>
-		public bool OwnsAttachments = true;
 
 		/// <summary>
 		/// Multisampled color: RESOLVE_AND_STORE (true) or RESOLVE only (false).
@@ -707,10 +718,31 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		return SDL_GPUTextureSupportsSampleCount(device, GetTextureFormat(format), GetSampleCount(sampleCount));
 	}
 
-	internal override ResourceHandle CreateTexture(string? name, int width, int height, TextureFormat format, TextureFlags flags, SampleCount sampleCount, nint? targetBinding, int layers = 1, uint properties = 0)
+	internal override ResourceHandle CreateTexture(string? name, int width, int height, TextureFormat format, TextureFlags flags, SampleCount sampleCount, nint? targetBinding, int layers = 1, uint properties = 0, ResourceHandle? resolveInto = null, bool memoryless = false)
 	{
 		if (device == nint.Zero)
 			throw deviceNotCreated;
+
+		// multisampled arrays and memoryless attachments exist only with the SDL_GPU kit
+		if (layers > 1 && sampleCount != SampleCount.One && !Capabilities.KitExports)
+			throw new NotSupportedException($"Multisampled array textures need the SDL_GPU kit for visionOS; the loaded SDL reports {Capabilities}");
+		if (memoryless && !Capabilities.Memoryless)
+			throw new NotSupportedException($"Memoryless textures need the SDL_GPU kit for visionOS with the Metal driver (GraphicsCapabilities.Memoryless); the loaded SDL reports {Capabilities}");
+		if (memoryless && sampleCount == SampleCount.One)
+			throw new ArgumentException("Memoryless textures are multisampled attachments; a single-sample texture would need a sampler, which memoryless memory cannot provide");
+
+		// an existing texture as resolve target must match the multisampled one
+		TextureResource? resolveTarget = null;
+		if (resolveInto.HasValue)
+		{
+			resolveTarget = RequireResource<TextureResource>(resolveInto.Value);
+			if (sampleCount == SampleCount.One)
+				throw new ArgumentException("Only a multisampled texture resolves into another texture");
+			if (resolveTarget.SampleCount != SDL_GPUSampleCount.SDL_GPU_SAMPLECOUNT_1)
+				throw new ArgumentException("The resolve texture must be single-sample");
+			if (resolveTarget.Format != GetTextureFormat(format) || resolveTarget.Width != width || resolveTarget.Height != height || resolveTarget.Layers != layers)
+				throw new ArgumentException($"The resolve texture ({resolveTarget.Width}x{resolveTarget.Height}, {resolveTarget.Layers} layer(s), {resolveTarget.Format}) does not match the multisampled texture ({width}x{height}, {layers} layer(s), {GetTextureFormat(format)})");
+		}
 
 		// a host property that names an existing native texture (SDL_GPU kit, P3)
 		var external = properties != 0 && SDL_HasProperty(properties, SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER);
@@ -723,13 +755,16 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		// works on its own set (a copy of the caller's, if any)
 		uint props = properties;
 		bool ownProps = false;
-		if (!string.IsNullOrEmpty(name))
+		if (!string.IsNullOrEmpty(name) || memoryless)
 		{
 			props = SDL_CreateProperties();
 			ownProps = true;
 			if (properties != 0)
 				SDL_CopyProperties(properties, props);
-			SDL_SetStringProperty(props, SDL_PROP_GPU_TEXTURE_CREATE_NAME_STRING, name);
+			if (!string.IsNullOrEmpty(name))
+				SDL_SetStringProperty(props, SDL_PROP_GPU_TEXTURE_CREATE_NAME_STRING, name);
+			if (memoryless)
+				SDL_SetBooleanProperty(props, SDL_PROP_GPU_TEXTURE_CREATE_METAL_MEMORYLESS_BOOLEAN, true);
 		}
 
 		SDL_GPUTextureCreateInfo info = new()
@@ -775,12 +810,22 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		if (texture == nint.Zero)
 			throw App.CreateExceptionFromSDL(nameof(SDL_CreateGPUTexture));
 
-		// create a resolve texture if we're multisampled
+		// the resolve texture of a multisampled texture: the caller's existing texture, or a
+		// Foster-created copy
 		ResourceHandle resolveTexture = default;
+		var ownsResolve = true;
 		if (sampleCount != SampleCount.One)
 		{
-			var resolveName = name != null ? $"Resolve-{name}" : null;
-			resolveTexture = CreateTexture(resolveName, width, height, format, flags, SampleCount.One, targetBinding, layers);
+			if (resolveInto.HasValue)
+			{
+				resolveTexture = resolveInto.Value;
+				ownsResolve = false;
+			}
+			else
+			{
+				var resolveName = name != null ? $"Resolve-{name}" : null;
+				resolveTexture = CreateTexture(resolveName, width, height, format, flags, SampleCount.One, targetBinding, layers);
+			}
 		}
 
 		// create resulting texture resource
@@ -793,14 +838,19 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			SampleCount = GetSampleCount(sampleCount),
 			Layers = layers,
 			External = external,
-			MultiSampleResolve = resolveTexture
+			Memoryless = memoryless,
+			MultiSampleResolve = resolveTexture,
+			OwnsResolve = ownsResolve
 		};
 
 		var handle = RegisterResource(res);
 
-		// attach to target
+		// attach to target (created by Foster for it, so destroyed with it)
 		if (targetBinding.HasValue && resources.TryGetValue(targetBinding.Value, out var tar) && tar is TargetResource att)
+		{
 			att.Attachments.Add(handle);
+			att.Owned.Add(handle);
+		}
 
 		return handle;
 	}
@@ -1048,9 +1098,9 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		return RegisterResource(new TargetResource(this) { MultiSampleStore = multiSampleStore, DepthResolve = depthResolve });
 	}
 
-	internal override ResourceHandle CreateTarget(ReadOnlySpan<ResourceHandle> attachments, int layer)
+	internal override ResourceHandle CreateTarget(ReadOnlySpan<ResourceHandle> attachments, int layer, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0)
 	{
-		var res = new TargetResource(this) { Layer = layer, OwnsAttachments = false };
+		var res = new TargetResource(this) { Layer = layer, MultiSampleStore = multiSampleStore, DepthResolve = depthResolve };
 		foreach (var it in attachments)
 		{
 			var tex = RequireResource<TextureResource>(it);
@@ -1333,16 +1383,15 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		{
 			if (it is TextureResource tex)
 			{
-				if (tex.MultiSampleResolve)
+				if (tex.MultiSampleResolve && tex.OwnsResolve)
 					DestroyResource(tex.MultiSampleResolve);
 				SDL_ReleaseGPUTexture(device, tex.Texture);
 			}
 			else if (it is TargetResource tar)
 			{
-				// a Target over existing textures does not own them
-				if (tar.OwnsAttachments)
-					foreach (var att in tar.Attachments)
-						DestroyResource(att);
+				// only what Foster created for this Target; existing textures stay with their owner
+				foreach (var att in tar.Owned)
+					DestroyResource(att);
 				if (tar.PassProperties != 0)
 					SDL_DestroyProperties(tar.PassProperties);
 			}
@@ -1871,10 +1920,10 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		var layer = targetRes?.Layer ?? 0;
 		var multiSampleStore = targetRes?.MultiSampleStore ?? true;
 		TextureResource? depthRes = null;
-		var colorTargets = new StackList8<(nint Attachment, nint Resolve)>();
+		var colorTargets = new StackList8<(nint Attachment, nint Resolve, bool Memoryless)>();
 		var depthStencilTarget = nint.Zero;
 
-		foreach (var it in target.Attachments)
+		foreach (var it in target.RenderAttachments)
 		{
 			var tex = RequireResource<TextureResource>(it.Resource);
 			if (it.Format.IsDepthStencilFormat())
@@ -1885,7 +1934,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			else
 			{
 				var resolve = FindResource<TextureResource>(tex.MultiSampleResolve)?.Texture ?? nint.Zero;
-				colorTargets.Add((tex.Texture, resolve));
+				colorTargets.Add((tex.Texture, resolve, tex.Memoryless));
 			}
 		}
 
@@ -1895,6 +1944,9 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		for (int i = 0; i < colorTargets.Count; i++)
 		{
 			var col = clear.Color.HasValue && clear.Color.Value.Count > i ? clear.Color.Value[i] : Color.Transparent;
+			// memoryless attachments have nothing to load: the pass must start with a clear
+			if (colorTargets[i].Memoryless && !clear.Color.HasValue)
+				throw new InvalidOperationException($"Color attachment {i} of Target '{target.Name}' is memoryless and cannot be loaded; begin the pass with a clear of the Target");
 			colorInfo[i] = new()
 			{
 				texture = colorTargets[i].Attachment,
@@ -1909,8 +1961,10 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 				store_op = colorTargets[i].Resolve == nint.Zero ? SDL_GPUStoreOp.SDL_GPU_STOREOP_STORE :
 					multiSampleStore ? SDL_GPUStoreOp.SDL_GPU_STOREOP_RESOLVE_AND_STORE :
 					SDL_GPUStoreOp.SDL_GPU_STOREOP_RESOLVE,
-				cycle = clear.Color.HasValue,
-				resolve_texture = colorTargets[i].Resolve
+				cycle = clear.Color.HasValue && !colorTargets[i].Memoryless,
+				resolve_texture = colorTargets[i].Resolve,
+				resolve_mip_level = 0,
+				resolve_layer = (uint)layer
 			};
 		}
 
@@ -1921,6 +1975,8 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		scoped ref var depthTarget = ref Unsafe.NullRef<SDL_GPUDepthStencilTargetInfo>();
 		if (depthStencilTarget != nint.Zero)
 		{
+			if (depthRes!.Memoryless && !clear.Depth.HasValue)
+				throw new InvalidOperationException($"The depth attachment of Target '{target.Name}' is memoryless and cannot be loaded; begin the pass with a clear of depth");
 			depthValue = new()
 			{
 				texture = depthStencilTarget,
@@ -1928,12 +1984,14 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 				load_op = clear.Depth.HasValue ?
 					SDL_GPULoadOp.SDL_GPU_LOADOP_CLEAR :
 					SDL_GPULoadOp.SDL_GPU_LOADOP_LOAD,
-				store_op = SDL_GPUStoreOp.SDL_GPU_STOREOP_STORE,
+				// memoryless depth is resolved (pass properties below) and discarded; otherwise
+				// the samples stay for later passes on this Target
+				store_op = depthRes.Memoryless ? SDL_GPUStoreOp.SDL_GPU_STOREOP_DONT_CARE : SDL_GPUStoreOp.SDL_GPU_STOREOP_STORE,
 				stencil_load_op = clear.Stencil.HasValue ?
 					SDL_GPULoadOp.SDL_GPU_LOADOP_CLEAR :
 					SDL_GPULoadOp.SDL_GPU_LOADOP_LOAD,
 				stencil_store_op = SDL_GPUStoreOp.SDL_GPU_STOREOP_STORE,
-				cycle = clear.Depth.HasValue && clear.Stencil.HasValue,
+				cycle = clear.Depth.HasValue && clear.Stencil.HasValue && !depthRes.Memoryless,
 				clear_stencil = (byte)(clear.Stencil ?? 0),
 				mip_level = 0,
 				layer = (byte)layer,
@@ -2212,7 +2270,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		var formats = new StackList32<(SDL_GPUTextureFormat Format, SDL_GPUSampleCount SampleCount)>();
 		var target = GetDrawTarget(drawableTarget, out _);
 		if (target != null)
-			foreach (var it in target.Attachments)
+			foreach (var it in target.RenderAttachments)
 				formats.Add((GetTextureFormat(it.Format), GetSampleCount(it.SampleCount)));
 		return formats;
 	}
