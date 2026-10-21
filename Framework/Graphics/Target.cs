@@ -70,14 +70,16 @@ public class Target : IGraphicResource, IDrawableTarget
 
 	private Target(GraphicsDevice graphicsDevice, int width, int height, in StackList16<(TextureFormat Format, TextureFlags Flags, SampleCount SampleCount)> attachments, string? name = null)
 	{
+		// set first: the finalizer disposes through the device even if a check below throws
+		GraphicsDevice = graphicsDevice;
+		Name = name ?? string.Empty;
+
 		if (width <= 0 || height <= 0)
 			throw new ArgumentException("Target width and height must be larger than 0");
 
 		if (attachments.Count <= 0)
 			throw new ArgumentException("Target needs at least 1 color attachment");
 
-		Name = name ?? string.Empty;
-		GraphicsDevice = graphicsDevice;
 		Resource = GraphicsDevice.CreateTarget(width, height);
 		Width = width;
 		Height = height;
