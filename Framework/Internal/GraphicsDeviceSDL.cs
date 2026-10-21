@@ -991,6 +991,14 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		sourceRegion = sourceRegion.GetIntersection(new RectInt(0, 0, src.Width, src.Height));
 		destRegion = destRegion.GetIntersection(new RectInt(0, 0, dst.Width, dst.Height));
 
+		// SDL's blit is a render pass over the whole destination texture; only the viewport is
+		// limited to the destination rectangle. A blit into part of the texture must therefore
+		// load the existing content and must not cycle the texture, otherwise the rest of the
+		// texture (or of its other layers) is lost. A blit that covers the whole texture keeps
+		// the cheaper DONT_CARE and cycle.
+		var covers = destRegion.X == 0 && destRegion.Y == 0 && destRegion.Width == dst.Width && destRegion.Height == dst.Height;
+		var discard = covers && dst.Layers == 1;
+
 		SDL_BlitGPUTexture(cmdRender, new()
 		{
 			source = new()
@@ -1013,10 +1021,10 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 				w = (uint)destRegion.Width,
 				h = (uint)destRegion.Height
 			},
-			load_op = SDL_GPULoadOp.SDL_GPU_LOADOP_DONT_CARE,
+			load_op = discard ? SDL_GPULoadOp.SDL_GPU_LOADOP_DONT_CARE : SDL_GPULoadOp.SDL_GPU_LOADOP_LOAD,
 			flip_mode = SDL_FlipMode.SDL_FLIP_NONE,
 			filter = GetFilter(filter),
-			cycle = true
+			cycle = discard
 		});
 	}
 
