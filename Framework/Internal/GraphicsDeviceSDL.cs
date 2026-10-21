@@ -25,6 +25,16 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		public SDL_GPUSampleCount SampleCount;
 
 		/// <summary>
+		/// Array layers (1 for a plain 2D texture).
+		/// </summary>
+		public int Layers = 1;
+
+		/// <summary>
+		/// Wraps a native texture owned by the host (created through SDL properties).
+		/// </summary>
+		public bool External;
+
+		/// <summary>
 		/// If we are multisampled, we need a resolve texture
 		/// </summary>
 		public ResourceHandle MultiSampleResolve;
@@ -40,6 +50,16 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		: Resource(graphicsDevice)
 	{
 		public readonly List<ResourceHandle> Attachments = [];
+
+		/// <summary>
+		/// Array layer the render pass writes into (color slice and depth layer).
+		/// </summary>
+		public int Layer;
+
+		/// <summary>
+		/// False for a Target over existing textures: destroying the Target leaves them alone.
+		/// </summary>
+		public bool OwnsAttachments = true;
 	}
 
 	private class BufferResource(GraphicsDeviceSDL graphicsDevice, string? name, SDL_GPUBufferUsageFlags usage, IndexFormat indexFormat)
@@ -672,26 +692,40 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		return SDL_GPUTextureSupportsSampleCount(device, GetTextureFormat(format), GetSampleCount(sampleCount));
 	}
 
-	internal override ResourceHandle CreateTexture(string? name, int width, int height, TextureFormat format, TextureFlags flags, SampleCount sampleCount, nint? targetBinding)
+	internal override ResourceHandle CreateTexture(string? name, int width, int height, TextureFormat format, TextureFlags flags, SampleCount sampleCount, nint? targetBinding, int layers = 1, uint properties = 0)
 	{
 		if (device == nint.Zero)
 			throw deviceNotCreated;
 
-		uint props = 0;
+		// a host property that names an existing native texture (SDL_GPU kit, P3)
+		var external = properties != 0 && SDL_HasProperty(properties, SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER);
+		if (external && !Capabilities.ExternalTextures)
+			throw new NotSupportedException(
+				"External textures (SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER) need the SDL_GPU kit for visionOS " +
+				$"with the Metal driver; the loaded SDL reports {Capabilities}");
+
+		// caller properties are used as they are (and stay owned by the caller); otherwise
+		// Foster creates its own set for the debug name
+		uint props = properties;
+		bool ownProps = false;
 		if (!string.IsNullOrEmpty(name))
 		{
-			props = SDL_CreateProperties();
+			if (props == 0)
+			{
+				props = SDL_CreateProperties();
+				ownProps = true;
+			}
 			SDL_SetStringProperty(props, SDL_PROP_GPU_TEXTURE_CREATE_NAME_STRING, name);
 		}
 
 		SDL_GPUTextureCreateInfo info = new()
 		{
-			type = SDL_GPUTextureType.SDL_GPU_TEXTURETYPE_2D,
+			type = layers > 1 ? SDL_GPUTextureType.SDL_GPU_TEXTURETYPE_2D_ARRAY : SDL_GPUTextureType.SDL_GPU_TEXTURETYPE_2D,
 			format = GetTextureFormat(format),
 			usage = 0,
 			width = (uint)width,
 			height = (uint)height,
-			layer_count_or_depth = 1,
+			layer_count_or_depth = (uint)layers,
 			num_levels = 1,
 			sample_count = GetSampleCount(sampleCount),
 			props = props
@@ -699,11 +733,14 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 
 		// only a sampler if not multisampled
 		// (otherwise there's a resolve texture used for that, created later)
-		if (sampleCount == SampleCount.One)
+		// External textures get only what the flags ask for (TextureFlags.Sampled): SDL requires
+		// the native texture to cover every requested usage, and a compositor drawable may not
+		// be shader-readable.
+		if (sampleCount == SampleCount.One && (!external || flags.Has(TextureFlags.Sampled)))
 			info.usage |= SDL_GPUTextureUsageFlags.SDL_GPU_TEXTUREUSAGE_SAMPLER;
 
-		// we're a render target attachment
-		if (targetBinding != null)
+		// we're a render target attachment (of a Foster-created Target, or by request)
+		if (targetBinding != null || flags.Has(TextureFlags.RenderTarget))
 		{
 			if (format.IsDepthStencilFormat())
 				info.usage |= SDL_GPUTextureUsageFlags.SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
@@ -719,7 +756,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 
 		// try to create texture on GPU
 		nint texture = SDL_CreateGPUTexture(device, info);
-		if (props != 0)
+		if (ownProps)
 			SDL_DestroyProperties(props);
 		if (texture == nint.Zero)
 			throw App.CreateExceptionFromSDL(nameof(SDL_CreateGPUTexture));
@@ -729,7 +766,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		if (sampleCount != SampleCount.One)
 		{
 			var resolveName = name != null ? $"Resolve-{name}" : null;
-			resolveTexture = CreateTexture(resolveName, width, height, format, flags, SampleCount.One, targetBinding);
+			resolveTexture = CreateTexture(resolveName, width, height, format, flags, SampleCount.One, targetBinding, layers);
 		}
 
 		// create resulting texture resource
@@ -740,6 +777,8 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			Height = height,
 			Format = info.format,
 			SampleCount = GetSampleCount(sampleCount),
+			Layers = layers,
+			External = external,
 			MultiSampleResolve = resolveTexture
 		};
 
@@ -752,7 +791,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		return handle;
 	}
 
-	internal override void SetTextureData(ResourceHandle handle, nint data, int length, RectInt destRegion)
+	internal override void SetTextureData(ResourceHandle handle, nint data, int length, RectInt destRegion, int layer = 0)
 	{
 		static uint RoundToAlignment(uint value, uint alignment)
 			=> alignment * ((value + alignment - 1) / alignment);
@@ -765,7 +804,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		// search up for resolve texture if we're multisampled
 		if (res.MultiSampleResolve)
 		{
-			SetTextureData(res.MultiSampleResolve, data, length, destRegion);
+			SetTextureData(res.MultiSampleResolve, data, length, destRegion, layer);
 			return;
 		}
 
@@ -840,7 +879,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 				destination: new()
 				{
 					texture = res.Texture,
-					layer = 0,
+					layer = (uint)layer,
 					mip_level = 0,
 					x = (uint)destRegion.X,
 					y = (uint)destRegion.Y,
@@ -860,7 +899,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			textureUploadBufferOffset += (uint)length;
 	}
 
-	internal override void GetTextureData(ResourceHandle handle, nint data, int length, RectInt sourceRegion)
+	internal override void GetTextureData(ResourceHandle handle, nint data, int length, RectInt sourceRegion, int layer = 0)
 	{
 		if (device == nint.Zero)
 			throw deviceNotCreated;
@@ -871,7 +910,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		// search up for the resolve texture
 		if (res.MultiSampleResolve)
 		{
-			GetTextureData(res.MultiSampleResolve, data, length, sourceRegion);
+			GetTextureData(res.MultiSampleResolve, data, length, sourceRegion, layer);
 			return;
 		}
 
@@ -907,7 +946,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 					source: new()
 					{
 						texture = res.Texture,
-						layer = 0,
+						layer = (uint)layer,
 						mip_level = 0,
 						x = (uint)sourceRegion.X,
 						y = (uint)sourceRegion.Y,
@@ -940,7 +979,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		}
 	}
 
-	internal override void BlitTexture(ResourceHandle sourceTexture, RectInt sourceRegion, ResourceHandle destTexture, RectInt destRegion, TextureFilter filter)
+	internal override void BlitTexture(ResourceHandle sourceTexture, RectInt sourceRegion, ResourceHandle destTexture, RectInt destRegion, TextureFilter filter, int sourceLayer = 0, int destLayer = 0)
 	{
 		// TODO:
 		// Without this, the texture won't necessarily fully upload?
@@ -959,7 +998,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			{
 				texture = src.SamplerTexture,
 				mip_level = 0,
-				layer_or_depth_plane = 0,
+				layer_or_depth_plane = (uint)sourceLayer,
 				x = (uint)sourceRegion.X,
 				y = (uint)sourceRegion.Y,
 				w = (uint)sourceRegion.Width,
@@ -969,7 +1008,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			{
 				texture = dst.Texture,
 				mip_level = 0,
-				layer_or_depth_plane = 0,
+				layer_or_depth_plane = (uint)destLayer,
 				x = (uint)destRegion.X,
 				y = (uint)destRegion.Y,
 				w = (uint)destRegion.Width,
@@ -985,6 +1024,19 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 	internal override ResourceHandle CreateTarget(int width, int height)
 	{
 		return RegisterResource(new TargetResource(this));
+	}
+
+	internal override ResourceHandle CreateTarget(ReadOnlySpan<ResourceHandle> attachments, int layer)
+	{
+		var res = new TargetResource(this) { Layer = layer, OwnsAttachments = false };
+		foreach (var it in attachments)
+		{
+			var tex = RequireResource<TextureResource>(it);
+			if (layer < 0 || layer >= tex.Layers)
+				throw new ArgumentOutOfRangeException(nameof(layer), $"Layer {layer} is out of range for an attachment with {tex.Layers} layer(s)");
+			res.Attachments.Add(it);
+		}
+		return RegisterResource(res);
 	}
 
 	internal override ResourceHandle CreateBuffer(string? name, BufferType type, IndexFormat format)
@@ -1265,8 +1317,10 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			}
 			else if (it is TargetResource tar)
 			{
-				foreach (var att in tar.Attachments)
-					DestroyResource(att);
+				// a Target over existing textures does not own them
+				if (tar.OwnsAttachments)
+					foreach (var att in tar.Attachments)
+						DestroyResource(att);
 			}
 			else if (it is BufferResource buf)
 			{
@@ -1282,6 +1336,21 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 				SDL_ReleaseGPUComputePipeline(device, comp.Pipeline);
 			}
 		}
+	}
+
+	/// <summary>
+	/// The SDL texture to bind for a sampler slot: the texture's sampler texture, or the
+	/// fallback when none is set. Array textures cannot be bound as 2D samplers (the shader
+	/// would read a texture2d_array as texture2d), so that is rejected instead of drawing wrong.
+	/// </summary>
+	private nint GetSamplerTexture(Texture? texture)
+	{
+		var res = FindResource<TextureResource>(texture?.Resource);
+		if (res == null)
+			return RequireResource<TextureResource>(emptyDefaultTexture).SamplerTexture;
+		if (res.Layers > 1)
+			throw new InvalidOperationException($"Texture '{texture!.Name}' is a 2D array with {res.Layers} layers and cannot be sampled as a 2D texture");
+		return res.SamplerTexture;
 	}
 
 	private T RequireResource<T>(ResourceHandle handle) where T : Resource
@@ -1424,9 +1493,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			for (int i = 0; i < vertexShader.SamplerCount; i++)
 			{
 				var value = i < command.VertexSamplers.Count ? command.VertexSamplers[i] : default;
-				samplers[i].texture =
-					FindResource<TextureResource>(value.Texture?.Resource)?.SamplerTexture ??
-					RequireResource<TextureResource>(emptyDefaultTexture).SamplerTexture;
+				samplers[i].texture = GetSamplerTexture(value.Texture);
 				samplers[i].sampler = GetSampler(value.Sampler);
 			}
 
@@ -1442,9 +1509,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			for (int i = 0; i < fragmentShader.SamplerCount; i++)
 			{
 				var value = i < command.FragmentSamplers.Count ? command.FragmentSamplers[i] : default;
-				samplers[i].texture =
-					FindResource<TextureResource>(value.Texture?.Resource)?.SamplerTexture ??
-					RequireResource<TextureResource>(emptyDefaultTexture).SamplerTexture;
+				samplers[i].texture = GetSamplerTexture(value.Texture);
 				samplers[i].sampler = GetSampler(value.Sampler);
 			}
 
@@ -1607,9 +1672,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			for (int i = 0; i < shader.SamplerCount; i++)
 			{
 				var value = i < command.Samplers.Count ? command.Samplers[i] : default;
-				samplers[i].texture =
-					FindResource<TextureResource>(value.Texture?.Resource)?.SamplerTexture ??
-					RequireResource<TextureResource>(emptyDefaultTexture).SamplerTexture;
+				samplers[i].texture = GetSamplerTexture(value.Texture);
 				samplers[i].sampler = GetSampler(value.Sampler);
 			}
 
@@ -1777,6 +1840,8 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		// configure lists of textures used
 		renderPassTarget = drawableTarget;
 
+		// the array layer the pass writes into (0 for plain 2D targets)
+		var layer = FindResource<TargetResource>(target.Resource)?.Layer ?? 0;
 		var colorTargets = new StackList8<(nint Attachment, nint Resolve)>();
 		var depthStencilTarget = nint.Zero;
 
@@ -1802,7 +1867,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			{
 				texture = colorTargets[i].Attachment,
 				mip_level = 0,
-				layer_or_depth_plane = 0,
+				layer_or_depth_plane = (uint)layer,
 				clear_color = GetColor(col),
 				load_op = clear.Color.HasValue ?
 					SDL_GPULoadOp.SDL_GPU_LOADOP_CLEAR :
@@ -1836,6 +1901,8 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 				stencil_store_op = SDL_GPUStoreOp.SDL_GPU_STOREOP_STORE,
 				cycle = clear.Depth.HasValue && clear.Stencil.HasValue,
 				clear_stencil = (byte)(clear.Stencil ?? 0),
+				mip_level = 0,
+				layer = (byte)layer,
 			};
 			depthTarget = ref depthValue;
 		}

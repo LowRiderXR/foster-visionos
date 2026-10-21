@@ -75,11 +75,16 @@ public abstract class GraphicsDevice
 	internal abstract void Flush();
 	internal abstract void OnEvent(SDL3.SDL.SDL_EventType type);
 
-	internal abstract ResourceHandle CreateTexture(string? name, int width, int height, TextureFormat format, TextureFlags flags, SampleCount sampleCount, nint? targetBinding);
-	internal abstract void SetTextureData(ResourceHandle texture, nint data, int length, RectInt destRegion);
-	internal abstract void GetTextureData(ResourceHandle texture, nint data, int length, RectInt sourceRegion);
-	internal abstract void BlitTexture(ResourceHandle sourceTexture, RectInt sourceRegion, ResourceHandle destTexture, RectInt destRegion, TextureFilter filter);
+	// layers: 1 for a 2D texture, above 1 for a 2D array. properties: SDL properties passed to
+	// SDL_CreateGPUTexture (0 for none); a property naming an existing native texture makes this
+	// an external texture, which needs GraphicsCapabilities.ExternalTextures.
+	internal abstract ResourceHandle CreateTexture(string? name, int width, int height, TextureFormat format, TextureFlags flags, SampleCount sampleCount, nint? targetBinding, int layers = 1, uint properties = 0);
+	internal abstract void SetTextureData(ResourceHandle texture, nint data, int length, RectInt destRegion, int layer = 0);
+	internal abstract void GetTextureData(ResourceHandle texture, nint data, int length, RectInt sourceRegion, int layer = 0);
+	internal abstract void BlitTexture(ResourceHandle sourceTexture, RectInt sourceRegion, ResourceHandle destTexture, RectInt destRegion, TextureFilter filter, int sourceLayer = 0, int destLayer = 0);
 	internal abstract ResourceHandle CreateTarget(int width, int height);
+	/// <summary>Registers a Target over existing Textures; the Target renders into <paramref name="layer"/> and does not own the attachments.</summary>
+	internal abstract ResourceHandle CreateTarget(ReadOnlySpan<ResourceHandle> attachments, int layer);
 	internal abstract ResourceHandle CreateShader(Shader shader, byte[] code, string entryPoint);
 	internal abstract ResourceHandle CreateBuffer(string? name, BufferType type, IndexFormat format);
 	internal abstract void UploadBufferData(ResourceHandle buffer, nint data, int dataSize, int dataDestOffset);
@@ -157,6 +162,15 @@ public abstract class GraphicsDevice
 				return;
 			}
 		}
+
+		// array textures cannot be bound as 2D samplers (the shader would read a
+		// texture2d_array as texture2d); reject before a render pass is opened
+		for (int i = 0; i < command.VertexSamplers.Count; i++)
+			if (command.VertexSamplers[i].Texture is { IsArray: true } arr)
+				throw new InvalidOperationException($"Texture '{arr.Name}' is a 2D array with {arr.Layers} layers and cannot be sampled as a 2D texture (vertex sampler {i})");
+		for (int i = 0; i < command.FragmentSamplers.Count; i++)
+			if (command.FragmentSamplers[i].Texture is { IsArray: true } arr)
+				throw new InvalidOperationException($"Texture '{arr.Name}' is a 2D array with {arr.Layers} layers and cannot be sampled as a 2D texture (fragment sampler {i})");
 
 		// validate storage buffers
 		for (int i = 0; i < command.VertexStorageBuffers.Count; i ++)
