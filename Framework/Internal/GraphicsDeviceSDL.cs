@@ -2051,12 +2051,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			}
 			renderPass = SDL_BeginGPURenderPassWithProperties(cmdRender, colorInfo, (uint)colorTargets.Count, depthTarget, props);
 			if (renderPass == nint.Zero)
-			{
-				// the kit validated the properties (map layers against views, attachments against
-				// the map's physical size, depth resolve texture): say why instead of dropping
-				// the draws silently
-				throw new InvalidOperationException($"Render pass on Target '{target.Name}' could not begin: {SDL_GetError()}");
-			}
+				throw RenderPassFailed(target);
 			passesThisFrame++;
 			return true;
 		}
@@ -2068,10 +2063,22 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			(uint)colorTargets.Count,
 			depthTarget
 		);
-		if (renderPass != nint.Zero)
-			passesThisFrame++;
+		if (renderPass == nint.Zero)
+			throw RenderPassFailed(target);
+		passesThisFrame++;
+		return true;
+	}
 
-		return renderPass != nint.Zero;
+	/// <summary>
+	/// SDL refused to begin a render pass (invalid parameters, the kit's checks of the pass
+	/// properties, or a validation failure in debug mode). Both ways of beginning a pass raise
+	/// this instead of dropping the draws silently; the only silent case is a target that does
+	/// not exist (destroyed window), which <see cref="BeginRenderPass"/> reports as false.
+	/// </summary>
+	private static InvalidOperationException RenderPassFailed(Target target)
+	{
+		var error = SDL_GetError();
+		return new InvalidOperationException($"Render pass on Target '{target.Name}' could not begin: {(string.IsNullOrEmpty(error) ? "SDL reports no error text (a debug mode validation failure, see the SDL log)" : error)}");
 	}
 
 	private void EndRenderPass()
