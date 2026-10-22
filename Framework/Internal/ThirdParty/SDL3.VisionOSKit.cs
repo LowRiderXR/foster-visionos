@@ -17,7 +17,8 @@ public static unsafe partial class SDL
 	public const string KitExport_BeginGPURenderPassWithProperties = "SDL_BeginGPURenderPassWithProperties";
 	public const string KitExport_GPUSupportsViewCount = "SDL_GPUSupportsViewCount";
 
-	// Kit: SDL_gpu.h (P6 multiview, P4 rasterization rate map, K4a depth resolve)
+	// Kit functions: a render pass with properties (view count, rasterization rate map, depth
+	// resolve) and the query whether the device renders a given number of views in one pass.
 
 	[LibraryImport(nativeLibName)]
 	[UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -27,7 +28,8 @@ public static unsafe partial class SDL
 	[UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
 	public static partial SDLBool SDL_GPUSupportsViewCount(IntPtr device, uint view_count);
 
-	// Kit: device creation (P1 shared MTLDevice / MTLCommandQueue, K4a completion callback)
+	// Kit device properties: create the SDL_GPU device on a host's MTLDevice and MTLCommandQueue,
+	// register a completion callback for every command buffer, read the device and queue back.
 	public const string SDL_PROP_GPU_DEVICE_CREATE_METAL_DEVICE_POINTER = "SDL.gpu.device.create.metal.device";
 	public const string SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_QUEUE_POINTER = "SDL.gpu.device.create.metal.command_queue";
 	public const string SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_CALLBACK_POINTER = "SDL.gpu.device.create.metal.command_buffer_completed_callback";
@@ -35,11 +37,12 @@ public static unsafe partial class SDL
 	public const string SDL_PROP_GPU_DEVICE_METAL_DEVICE_POINTER = "SDL.gpu.device.metal.device";
 	public const string SDL_PROP_GPU_DEVICE_METAL_COMMAND_QUEUE_POINTER = "SDL.gpu.device.metal.command_queue";
 
-	// Kit: textures (P3 import of an existing MTLTexture, K4b memoryless)
+	// Kit texture properties: wrap an existing MTLTexture, create a memoryless (tile memory only) texture.
 	public const string SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER = "SDL.gpu.texture.create.metal.texture";
 	public const string SDL_PROP_GPU_TEXTURE_CREATE_METAL_MEMORYLESS_BOOLEAN = "SDL.gpu.texture.create.metal.memoryless";
 
-	// Kit: graphics pipeline and render pass (P6, P4, K4a)
+	// Kit pipeline and render pass properties: view count (vertex amplification), rasterization
+	// rate map, depth resolve texture, layer and filter.
 	public const string SDL_PROP_GPU_GRAPHICSPIPELINE_CREATE_VIEW_COUNT_NUMBER = "SDL.gpu.graphicspipeline.create.view_count";
 	public const string SDL_PROP_GPU_RENDERPASS_CREATE_VIEW_COUNT_NUMBER = "SDL.gpu.renderpass.create.view_count";
 	public const string SDL_PROP_GPU_RENDERPASS_CREATE_METAL_RASTERIZATION_RATE_MAP_POINTER = "SDL.gpu.renderpass.create.metal.rasterization_rate_map";

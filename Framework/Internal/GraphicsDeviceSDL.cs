@@ -59,8 +59,6 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 	private class TargetResource(GraphicsDeviceSDL graphicsDevice)
 		: Resource(graphicsDevice)
 	{
-		public readonly List<ResourceHandle> Attachments = [];
-
 		/// <summary>
 		/// The attachments Foster created for this Target (destroyed with it); a Target over
 		/// existing textures owns only its multisampled copies, if any.
@@ -152,14 +150,6 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 	private Point2 renderPassTargetSize;
 	private int passesThisFrame;
 	private int drawsThisFrame;
-
-	private void RollFrameStats()
-	{
-		RenderPassesLastFrame = passesThisFrame;
-		DrawCallsLastFrame = drawsThisFrame;
-		passesThisFrame = 0;
-		drawsThisFrame = 0;
-	}
 	private nint renderPassPipeline;
 	private StackList4<ResourceHandle> renderPassVertexBuffers;
 	private ResourceHandle renderPassIndexBuffer;
@@ -530,6 +520,17 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		RollFrameStats();
 	}
 
+	/// <summary>
+	/// Publishes the pass and draw counters of the frame that just ended and starts counting anew.
+	/// </summary>
+	private void RollFrameStats()
+	{
+		RenderPassesLastFrame = passesThisFrame;
+		DrawCallsLastFrame = drawsThisFrame;
+		passesThisFrame = 0;
+		drawsThisFrame = 0;
+	}
+
 	internal override void Present()
 	{
 		EndCopyPass();
@@ -765,7 +766,8 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 				throw new ArgumentException($"The resolve texture ({resolveTarget.Width}x{resolveTarget.Height}, {resolveTarget.Layers} layer(s), {resolveTarget.Format}) does not match the multisampled texture ({width}x{height}, {layers} layer(s), {GetTextureFormat(format)})");
 		}
 
-		// a host property that names an existing native texture (SDL_GPU kit, P3)
+		// a host property that names an existing native texture (SDL_GPU kit,
+		// SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER)
 		var external = properties != 0 && SDL_HasProperty(properties, SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER);
 		if (external && !Capabilities.ExternalTextures)
 			throw new NotSupportedException(
@@ -868,10 +870,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 
 		// attach to target (created by Foster for it, so destroyed with it)
 		if (targetBinding.HasValue && resources.TryGetValue(targetBinding.Value, out var tar) && tar is TargetResource att)
-		{
-			att.Attachments.Add(handle);
 			att.Owned.Add(handle);
-		}
 
 		return handle;
 	}
@@ -1127,7 +1126,6 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			var tex = RequireResource<TextureResource>(it);
 			if (layer < 0 || layer >= tex.Layers)
 				throw new ArgumentOutOfRangeException(nameof(layer), $"Layer {layer} is out of range for an attachment with {tex.Layers} layer(s)");
-			res.Attachments.Add(it);
 		}
 		return RegisterResource(res);
 	}

@@ -175,7 +175,7 @@ public class Target : IGraphicResource, IDrawableTarget
 	/// <paramref name="layer"/> of every attachment. The Target does not own the Textures.
 	/// </summary>
 	public Target(GraphicsDevice graphicsDevice, ReadOnlySpan<Texture> attachments, int layer = 0, string? name = null)
-		: this(graphicsDevice, attachments, layer, SampleCount.One, true, DepthResolveFilter.Sample0, false, false, name) {}
+		: this(graphicsDevice, attachments, layer, SampleCount.One, true, DepthResolveFilter.Sample0, false, false, 1, name) {}
 
 	/// <summary>
 	/// Constructs a multisampled Target over existing single-sample Textures: Foster creates
@@ -192,7 +192,7 @@ public class Target : IGraphicResource, IDrawableTarget
 	/// then start with a clear of the memoryless attachments). Multisampled arrays and the depth resolve need the
 	/// SDL_GPU kit; without it a <see cref="NotSupportedException"/> names what is missing.
 	/// </summary>
-	public Target(GraphicsDevice graphicsDevice, ReadOnlySpan<Texture> attachments, int layer, SampleCount sampleCount, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0, bool colorMemoryless = false, bool depthMemoryless = false, string? name = null, int viewCount = 1)
+	public Target(GraphicsDevice graphicsDevice, ReadOnlySpan<Texture> attachments, int layer, SampleCount sampleCount, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0, bool colorMemoryless = false, bool depthMemoryless = false, int viewCount = 1, string? name = null)
 	{
 		// set first: the finalizer disposes through the device even if a check below throws
 		GraphicsDevice = graphicsDevice;
