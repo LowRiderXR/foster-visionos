@@ -43,6 +43,16 @@ public abstract class GraphicsDevice
 	/// </summary>
 	public GraphicsCapabilities Capabilities { get; protected set; } = GraphicsCapabilities.None;
 
+	/// <summary>
+	/// Render passes begun during the last frame (between two Present or Flush calls).
+	/// </summary>
+	public int RenderPassesLastFrame { get; protected set; }
+
+	/// <summary>
+	/// Draw calls performed during the last frame (between two Present or Flush calls).
+	/// </summary>
+	public int DrawCallsLastFrame { get; protected set; }
+
 	internal GraphicsDevice(App app)
 	{
 		App = app;
@@ -87,7 +97,7 @@ public abstract class GraphicsDevice
 	internal abstract void BlitTexture(ResourceHandle sourceTexture, RectInt sourceRegion, ResourceHandle destTexture, RectInt destRegion, TextureFilter filter, int sourceLayer = 0, int destLayer = 0);
 	internal abstract ResourceHandle CreateTarget(int width, int height, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0);
 	/// <summary>Registers a Target over existing Textures; the Target renders into <paramref name="layer"/> and does not own the attachments.</summary>
-	internal abstract ResourceHandle CreateTarget(ReadOnlySpan<ResourceHandle> attachments, int layer, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0);
+	internal abstract ResourceHandle CreateTarget(ReadOnlySpan<ResourceHandle> attachments, int layer, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0, int viewCount = 1);
 	internal abstract ResourceHandle CreateShader(Shader shader, byte[] code, string entryPoint);
 	internal abstract ResourceHandle CreateBuffer(string? name, BufferType type, IndexFormat format);
 	internal abstract void UploadBufferData(ResourceHandle buffer, nint data, int dataSize, int dataDestOffset);

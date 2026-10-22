@@ -48,6 +48,15 @@ public class Target : IGraphicResource, IDrawableTarget
 	public readonly int Layer;
 
 	/// <summary>
+	/// Views rendered by one pass (multiview through vertex amplification, SDL_GPU kit).
+	/// 1 renders <see cref="Layer"/> only; above 1 every draw renders the views into layers
+	/// <see cref="Layer"/> to <see cref="Layer"/> + ViewCount - 1 of the attachments, with one
+	/// viewport for all views. Shaders without a view index render the same image into every
+	/// view; shaders can read the view index to differ per view.
+	/// </summary>
+	public readonly int ViewCount = 1;
+
+	/// <summary>
 	/// True if the Target created its attachments and disposes them; false for a Target
 	/// built over existing Textures, which stay owned by whoever created them.
 	/// </summary>
@@ -151,7 +160,7 @@ public class Target : IGraphicResource, IDrawableTarget
 	/// then start with a clear of the memoryless attachments). Multisampled arrays and the depth resolve need the
 	/// SDL_GPU kit; without it a <see cref="NotSupportedException"/> names what is missing.
 	/// </summary>
-	public Target(GraphicsDevice graphicsDevice, ReadOnlySpan<Texture> attachments, int layer, SampleCount sampleCount, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0, bool colorMemoryless = false, bool depthMemoryless = false, string? name = null)
+	public Target(GraphicsDevice graphicsDevice, ReadOnlySpan<Texture> attachments, int layer, SampleCount sampleCount, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0, bool colorMemoryless = false, bool depthMemoryless = false, string? name = null, int viewCount = 1)
 	{
 		// set first: the finalizer disposes through the device even if a check below throws
 		GraphicsDevice = graphicsDevice;
@@ -191,9 +200,15 @@ public class Target : IGraphicResource, IDrawableTarget
 			throw new ArgumentException($"Target supports at most one depth attachment, {depthCount} were given");
 		if (layer < 0 || layer >= first.Layers)
 			throw new ArgumentOutOfRangeException(nameof(layer), $"Layer {layer} is out of range, the attachments have {first.Layers} layer(s)");
+		if (viewCount < 1)
+			throw new ArgumentOutOfRangeException(nameof(viewCount), "A Target renders at least one view");
+		if (layer + viewCount > first.Layers)
+			throw new ArgumentOutOfRangeException(nameof(viewCount), $"Layer {layer} plus {viewCount} views exceed the {first.Layers} layer(s) of the attachments");
 
 		// multisampled over existing textures: what the combination needs, with a clear message
 		var caps = graphicsDevice.Capabilities;
+		if (viewCount > 1 && !caps.MultiView)
+			throw new NotSupportedException($"Rendering {viewCount} views in one pass needs the SDL_GPU kit for visionOS with vertex amplification (GraphicsCapabilities.MultiView); the loaded SDL reports {caps}");
 		if (sampleCount == SampleCount.One)
 		{
 			if (colorMemoryless || depthMemoryless)
@@ -209,6 +224,12 @@ public class Target : IGraphicResource, IDrawableTarget
 				throw new NotSupportedException($"Memoryless attachments need the SDL_GPU kit for visionOS with the Metal driver (GraphicsCapabilities.Memoryless); the loaded SDL reports {caps}");
 			if (colorMemoryless && multiSampleStore)
 				throw new ArgumentException("Memoryless color attachments cannot keep their samples: set multiSampleStore to false (RESOLVE only) or make the color not memoryless");
+			// measured on macOS 27.0.1: with more than one view Metal resolves only the first
+			// view's depth when the multisampled depth is stored as well
+			// (StoreAndMultisampleResolve); the other views' depth stays unwritten. Resolve-only
+			// (memoryless depth, DONT_CARE) writes every view.
+			if (viewCount > 1 && depthCount > 0 && !depthMemoryless)
+				throw new NotSupportedException($"With {viewCount} views the multisampled depth must be memoryless (resolved only): Metal resolves the depth of the first view only when the samples are stored as well; set depthMemoryless, or render one pass per view");
 		}
 
 		Width = first.Width;
@@ -222,7 +243,8 @@ public class Target : IGraphicResource, IDrawableTarget
 		DepthResolve = depthResolve;
 		ColorMemoryless = sampleCount != SampleCount.One && colorMemoryless;
 		DepthMemoryless = sampleCount != SampleCount.One && depthMemoryless;
-		Resource = GraphicsDevice.CreateTarget(handles, layer, MultiSampleStore, depthResolve);
+		ViewCount = viewCount;
+		Resource = GraphicsDevice.CreateTarget(handles, layer, MultiSampleStore, depthResolve, viewCount);
 
 		if (sampleCount != SampleCount.One)
 		{

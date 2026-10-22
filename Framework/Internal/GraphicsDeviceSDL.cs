@@ -73,6 +73,11 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		public int Layer;
 
 		/// <summary>
+		/// Views per pass (multiview); 1 = off.
+		/// </summary>
+		public int ViewCount = 1;
+
+		/// <summary>
 		/// Multisampled color: RESOLVE_AND_STORE (true) or RESOLVE only (false).
 		/// </summary>
 		public bool MultiSampleStore = true;
@@ -145,6 +150,16 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 	// render pass
 	private IDrawableTarget? renderPassTarget;
 	private Point2 renderPassTargetSize;
+	private int passesThisFrame;
+	private int drawsThisFrame;
+
+	private void RollFrameStats()
+	{
+		RenderPassesLastFrame = passesThisFrame;
+		DrawCallsLastFrame = drawsThisFrame;
+		passesThisFrame = 0;
+		drawsThisFrame = 0;
+	}
 	private nint renderPassPipeline;
 	private StackList4<ResourceHandle> renderPassVertexBuffers;
 	private ResourceHandle renderPassIndexBuffer;
@@ -228,15 +243,19 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 	/// <summary>
 	/// Derives the optional features from the kit exports and the driver. Features that only the
 	/// Metal backend implements (external textures, memoryless, depth resolve) additionally require
-	/// the Metal driver; multiview and pass properties follow the exports alone.
+	/// the Metal driver; multiview also needs a device that supports two views, pass properties follow the exports alone.
 	/// </summary>
-	private static GraphicsCapabilities ProbeCapabilities(GraphicsDriver driver)
+	private static GraphicsCapabilities ProbeCapabilities(GraphicsDriver driver, nint device)
 	{
 		bool kit = ProbeKitExports();
 		var metal = driver == GraphicsDriver.Metal;
+		// multiview: the export alone is not enough, the device must support two views
+		// (vertex amplification); only ask when the export exists, otherwise the call would
+		// not bind
+		var multiView = kit && device != nint.Zero && SDL_GPUSupportsViewCount(device, 2);
 		return new GraphicsCapabilities(
 			KitExports: kit,
-			MultiView: kit,
+			MultiView: multiView,
 			PassProperties: kit,
 			ExternalTextures: kit && metal,
 			Memoryless: kit && metal,
@@ -316,7 +335,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			Log.Info($"Graphics Driver: SDL_GPU [{driverName}]");
 
 		// visionOS kit: probe the optional features of the loaded SDL (by export, not by version)
-		Capabilities = ProbeCapabilities(driver);
+		Capabilities = ProbeCapabilities(driver, device);
 		if (!flags.Has(AppFlags.NoHeaderLog))
 		{
 			// informational version: package version (0.4.2-visionos.N) plus "+<commit>" from
@@ -508,12 +527,14 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		EndCopyPass();
 		EndRenderPass();
 		FlushCommands(stall: false);
+		RollFrameStats();
 	}
 
 	internal override void Present()
 	{
 		EndCopyPass();
 		EndRenderPass();
+		RollFrameStats();
 
 		// don't present to the screen if we're not visible
 		if (inBackground)
@@ -1098,9 +1119,9 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		return RegisterResource(new TargetResource(this) { MultiSampleStore = multiSampleStore, DepthResolve = depthResolve });
 	}
 
-	internal override ResourceHandle CreateTarget(ReadOnlySpan<ResourceHandle> attachments, int layer, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0)
+	internal override ResourceHandle CreateTarget(ReadOnlySpan<ResourceHandle> attachments, int layer, bool multiSampleStore = true, DepthResolveFilter depthResolve = DepthResolveFilter.Sample0, int viewCount = 1)
 	{
-		var res = new TargetResource(this) { Layer = layer, MultiSampleStore = multiSampleStore, DepthResolve = depthResolve };
+		var res = new TargetResource(this) { Layer = layer, MultiSampleStore = multiSampleStore, DepthResolve = depthResolve, ViewCount = viewCount };
 		foreach (var it in attachments)
 		{
 			var tex = RequireResource<TextureResource>(it);
@@ -1453,6 +1474,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		var target = command.Target;
 		if (!BeginRenderPass(target, default))
 			return;
+		drawsThisFrame++;
 
 		var vertexShader = command.VertexShader!;
 		var fragmentShader = command.FragmentShader!;
@@ -2003,20 +2025,29 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		// pass properties, so the copy that shaders sample is written (STORE keeps the samples)
 		var depthResolve = depthRes != null && depthRes.SampleCount != SDL_GPUSampleCount.SDL_GPU_SAMPLECOUNT_1 && depthRes.MultiSampleResolve
 			? FindResource<TextureResource>(depthRes.MultiSampleResolve) : null;
-		if (depthResolve != null && Capabilities.DepthResolve && targetRes != null)
+		var viewCount = targetRes?.ViewCount ?? 1;
+		var useDepthResolve = depthResolve != null && Capabilities.DepthResolve && targetRes != null;
+		if (targetRes != null && (useDepthResolve || viewCount > 1))
 		{
+			// pass properties of the SDL_GPU kit: depth resolve and/or multiview
 			if (targetRes.PassProperties == 0)
 				targetRes.PassProperties = SDL_CreateProperties();
 			var props = targetRes.PassProperties;
-			SDL_SetPointerProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_TEXTURE_POINTER, depthResolve.Texture);
-			SDL_SetNumberProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_LAYER_NUMBER, layer);
-			SDL_SetStringProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_FILTER_STRING, targetRes.DepthResolve switch
+			SDL_SetNumberProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_VIEW_COUNT_NUMBER, viewCount);
+			if (useDepthResolve)
 			{
-				DepthResolveFilter.Min => "min",
-				DepthResolveFilter.Max => "max",
-				_ => "sample0",
-			});
+				SDL_SetPointerProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_TEXTURE_POINTER, depthResolve!.Texture);
+				SDL_SetNumberProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_LAYER_NUMBER, layer);
+				SDL_SetStringProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_FILTER_STRING, targetRes.DepthResolve switch
+				{
+					DepthResolveFilter.Min => "min",
+					DepthResolveFilter.Max => "max",
+					_ => "sample0",
+				});
+			}
 			renderPass = SDL_BeginGPURenderPassWithProperties(cmdRender, colorInfo, (uint)colorTargets.Count, depthTarget, props);
+			if (renderPass != nint.Zero)
+				passesThisFrame++;
 			return renderPass != nint.Zero;
 		}
 
@@ -2027,6 +2058,8 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			(uint)colorTargets.Count,
 			depthTarget
 		);
+		if (renderPass != nint.Zero)
+			passesThisFrame++;
 
 		return renderPass != nint.Zero;
 	}
@@ -2082,11 +2115,16 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		foreach (var format in GetDrawTargetFormatsAndSampleCount(command.Target))
 			hash = HashCode.Combine(hash, format);
 
+		// multiview: the view count is part of the pipeline (vertex amplification maximum)
+		var viewCount = GetDrawTarget(command.Target, out _)?.ViewCount ?? 1;
+		hash = HashCode.Combine(hash, viewCount);
+
 		// try to find an existing pipeline
-		var pipeline = pipelines.GetOrAdd<(GraphicsDeviceSDL, DrawCommand)>(hash, static (hash, args) =>
+		var pipeline = pipelines.GetOrAdd<(GraphicsDeviceSDL, DrawCommand, int)>(hash, static (hash, args) =>
 		{
 			var self = args.Item1;
 			var command = args.Item2;
+			var viewCount = args.Item3;
 			var vertRes = self.RequireResource<ShaderResource>(command.VertexShader!.Resource);
 			var fragRes = self.RequireResource<ShaderResource>(command.FragmentShader!.Resource);
 			var vertexAttributeCount = 0;
@@ -2223,7 +2261,16 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 				}
 			};
 
+			// multiview: view count as pipeline property (SDL_GPU kit)
+			if (viewCount > 1)
+			{
+				info.props = SDL_CreateProperties();
+				SDL_SetNumberProperty(info.props, SDL_PROP_GPU_GRAPHICSPIPELINE_CREATE_VIEW_COUNT_NUMBER, viewCount);
+			}
+
 			var pipeline = SDL_CreateGPUGraphicsPipeline(self.device, info);
+			if (info.props != 0)
+				SDL_DestroyProperties(info.props);
 			if (pipeline == nint.Zero)
 				throw App.CreateExceptionFromSDL(nameof(SDL_CreateGPUGraphicsPipeline));
 
@@ -2233,7 +2280,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 
 			return pipeline;
 
-		}, (this, command));
+		}, (this, command, viewCount));
 
 		return pipeline;
 	}
