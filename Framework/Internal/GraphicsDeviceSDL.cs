@@ -2027,13 +2027,19 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			? FindResource<TextureResource>(depthRes.MultiSampleResolve) : null;
 		var viewCount = targetRes?.ViewCount ?? 1;
 		var useDepthResolve = depthResolve != null && Capabilities.DepthResolve && targetRes != null;
-		if (targetRes != null && (useDepthResolve || viewCount > 1))
+		// rasterization rate map of the Target (set per frame; the Window has none)
+		var rateMap = target.RasterizationRateMap;
+		if (targetRes != null && (useDepthResolve || viewCount > 1 || rateMap != nint.Zero))
 		{
-			// pass properties of the SDL_GPU kit: depth resolve and/or multiview
+			// pass properties of the SDL_GPU kit: depth resolve, multiview and/or the rate map.
+			// The property set lives with the Target; every value is written again here, so a
+			// pointer that changed or went away since the last pass never goes stale (a 0
+			// pointer removes the property)
 			if (targetRes.PassProperties == 0)
 				targetRes.PassProperties = SDL_CreateProperties();
 			var props = targetRes.PassProperties;
 			SDL_SetNumberProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_VIEW_COUNT_NUMBER, viewCount);
+			SDL_SetPointerProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_RASTERIZATION_RATE_MAP_POINTER, rateMap);
 			if (useDepthResolve)
 			{
 				SDL_SetPointerProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_TEXTURE_POINTER, depthResolve!.Texture);
@@ -2046,9 +2052,15 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 				});
 			}
 			renderPass = SDL_BeginGPURenderPassWithProperties(cmdRender, colorInfo, (uint)colorTargets.Count, depthTarget, props);
-			if (renderPass != nint.Zero)
-				passesThisFrame++;
-			return renderPass != nint.Zero;
+			if (renderPass == nint.Zero)
+			{
+				// the kit validated the properties (map layers against views, attachments against
+				// the map's physical size, depth resolve texture): say why instead of dropping
+				// the draws silently
+				throw new InvalidOperationException($"Render pass on Target '{target.Name}' could not begin: {SDL_GetError()}");
+			}
+			passesThisFrame++;
+			return true;
 		}
 
 		// begin pass
@@ -2287,10 +2299,11 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 
 	private Target? GetDrawTarget(IDrawableTarget drawableTarget, out Point2 size)
 	{
-		// get specific target
+		// get specific target; the size the pass works in is the logical one (equal to the
+		// texture size without a rasterization rate map): default viewport and scissor
 		if (drawableTarget.Surface is Target target)
 		{
-			size = target.SizeInPixels();
+			size = target.LogicalSize;
 			return target;
 		}
 

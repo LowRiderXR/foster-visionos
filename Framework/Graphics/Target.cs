@@ -57,6 +57,37 @@ public class Target : IGraphicResource, IDrawableTarget
 	public readonly int ViewCount = 1;
 
 	/// <summary>
+	/// Rasterization rate map the render passes on this Target use (Metal
+	/// <c>id&lt;MTLRasterizationRateMap&gt;</c> through the SDL_GPU kit's pass property), or 0.
+	/// Set per frame with <see cref="SetRasterizationRateMap"/>; a compositor hands out a new
+	/// map with every drawable.
+	/// </summary>
+	public nint RasterizationRateMap { get; private set; }
+
+	/// <summary>
+	/// Width of the space drawing happens in: with a rasterization rate map the map's logical
+	/// screen size, otherwise <see cref="Width"/>. Viewport, scissor and the Batcher's
+	/// projection use this size; <see cref="Width"/> stays the texture size, which is what
+	/// reading a texture back or blitting it works in.
+	/// </summary>
+	public int LogicalWidth { get; private set; }
+
+	/// <summary>
+	/// Height of the space drawing happens in, see <see cref="LogicalWidth"/>.
+	/// </summary>
+	public int LogicalHeight { get; private set; }
+
+	/// <summary>
+	/// Logical size, see <see cref="LogicalWidth"/>.
+	/// </summary>
+	public Point2 LogicalSize => new(LogicalWidth, LogicalHeight);
+
+	/// <summary>
+	/// Logical bounds, see <see cref="LogicalWidth"/>.
+	/// </summary>
+	public RectInt LogicalBounds => new(0, 0, LogicalWidth, LogicalHeight);
+
+	/// <summary>
 	/// True if the Target created its attachments and disposes them; false for a Target
 	/// built over existing Textures, which stay owned by whoever created them.
 	/// </summary>
@@ -110,8 +141,9 @@ public class Target : IGraphicResource, IDrawableTarget
 	public readonly DepthResolveFilter DepthResolve = DepthResolveFilter.Sample0;
 
 	object? IDrawableTarget.Surface => this;
-	int IDrawableTarget.WidthInPixels => Width;
-	int IDrawableTarget.HeightInPixels => Height;
+	// the size drawing code works in: logical under a rasterization rate map, else the texture size
+	int IDrawableTarget.WidthInPixels => LogicalWidth;
+	int IDrawableTarget.HeightInPixels => LogicalHeight;
 
 	internal readonly GraphicsDevice.ResourceHandle Resource;
 
@@ -235,6 +267,8 @@ public class Target : IGraphicResource, IDrawableTarget
 		Width = first.Width;
 		Height = first.Height;
 		Bounds = new RectInt(0, 0, Width, Height);
+		LogicalWidth = Width;
+		LogicalHeight = Height;
 		Attachments = attachments.ToArray();
 		Layer = layer;
 		OwnsAttachments = false;
@@ -279,6 +313,8 @@ public class Target : IGraphicResource, IDrawableTarget
 		Width = width;
 		Height = height;
 		Bounds = new RectInt(0, 0, Width, Height);
+		LogicalWidth = Width;
+		LogicalHeight = Height;
 		Layer = 0;
 		OwnsAttachments = true;
 		Attachments = new Texture[attachments.Count];
@@ -290,6 +326,50 @@ public class Target : IGraphicResource, IDrawableTarget
 	}
 
 	~Target() => Dispose();
+
+	/// <summary>
+	/// Rasterizes the following render passes on this Target with a rasterization rate map
+	/// (variable rasterization rate, for example the foveation map a compositor provides for
+	/// its drawables; SDL_GPU kit, Metal). <paramref name="rasterizationRateMap"/> is the
+	/// <c>id&lt;MTLRasterizationRateMap&gt;</c> as a pointer, <paramref name="logicalWidth"/>
+	/// and <paramref name="logicalHeight"/> the map's logical screen size, which Foster cannot
+	/// read itself. With a map, viewport, scissor and the Batcher's projection work in the
+	/// logical space (<see cref="LogicalWidth"/>, <see cref="LogicalHeight"/>,
+	/// <see cref="IDrawableTarget.WidthInPixels"/>); interpolated vertex outputs follow it as
+	/// well, while the fragment position and every texture read stay physical. The map must
+	/// have at least <see cref="ViewCount"/> layers and the attachments must be at least as
+	/// large as its physical size, which SDL checks when the pass begins. Call it again
+	/// whenever the map changes (a compositor hands out a new one each frame); the Target
+	/// keeps only the pointer, the caller keeps the map alive while passes use it. A map of 0
+	/// turns it off again and restores the texture size as the logical size. Needs
+	/// <see cref="GraphicsCapabilities.PassProperties"/>, otherwise a
+	/// <see cref="NotSupportedException"/>; with a map the Target must render layer 0 (the
+	/// kit maps view i to map layer i).
+	/// </summary>
+	public void SetRasterizationRateMap(nint rasterizationRateMap, int logicalWidth, int logicalHeight)
+	{
+		if (rasterizationRateMap == 0)
+		{
+			RasterizationRateMap = 0;
+			LogicalWidth = Width;
+			LogicalHeight = Height;
+			return;
+		}
+		if (!GraphicsDevice.Capabilities.PassProperties)
+			throw new NotSupportedException($"Rendering with a rasterization rate map needs the SDL_GPU kit (GraphicsCapabilities.PassProperties); loaded: {GraphicsDevice.Capabilities}");
+		if (Layer != 0)
+			throw new InvalidOperationException($"Target '{Name}' renders layer {Layer}; with a rasterization rate map the pass must start at layer 0 (view i uses map layer i)");
+		if (logicalWidth <= 0 || logicalHeight <= 0)
+			throw new ArgumentException($"The logical size of the rasterization rate map must be larger than 0, not {logicalWidth}x{logicalHeight}");
+		RasterizationRateMap = rasterizationRateMap;
+		LogicalWidth = logicalWidth;
+		LogicalHeight = logicalHeight;
+	}
+
+	/// <summary>
+	/// Renders without a rasterization rate map again, see <see cref="SetRasterizationRateMap"/>.
+	/// </summary>
+	public void ClearRasterizationRateMap() => SetRasterizationRateMap(0, 0, 0);
 
 	private static StackList16<(TextureFormat Format, TextureFlags Flags, SampleCount SampleCount)> GetAttachments(in ReadOnlySpan<TextureFormat> values, TextureFlags flags)
 	{
