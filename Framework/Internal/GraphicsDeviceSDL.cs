@@ -217,14 +217,23 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 
 	/// <summary>
 	/// True when the SDL3 library that the P/Invokes resolve to exports the functions of the
-	/// SDL_GPU kit for visionOS. The library handle comes from the same probing path LibraryImport
+	/// SDL_GPU kit for visionOS. The library handle comes from the same search path LibraryImport
 	/// uses, so the answer refers to the SDL that is actually in use. Static, so a host can ask
 	/// before the App exists (GraphicsDevice.IsKitSDLLoaded).
 	/// </summary>
 	internal static bool ProbeKitExports()
 	{
 		if (!NativeLibrary.TryLoad("SDL3", typeof(SDL3.SDL).Assembly, null, out var handle))
-			return false;
+		{
+			// Under Native AOT, TryLoad with an assembly only runs the name search: it neither
+			// calls the DllImportResolver nor raises ResolvingUnmanagedDll (dotnet/runtime,
+			// NativeLibrary.NativeAot.cs). A host that links SDL3 into its executable, such as a
+			// visionOS app with an embedded SDL3.framework, is therefore not found by name, but
+			// its exports are reachable through the main program's handle (dlopen(NULL), which
+			// searches the executable and the libraries it depends on). With a plain SDL3 the
+			// kit exports are missing there as well, so the answer stays false.
+			handle = NativeLibrary.GetMainProgramHandle();
+		}
 		// no NativeLibrary.Free: the library stays loaded for the P/Invokes anyway
 		return NativeLibrary.TryGetExport(handle, KitExport_BeginGPURenderPassWithProperties, out _)
 			&& NativeLibrary.TryGetExport(handle, KitExport_GPUSupportsViewCount, out _);
