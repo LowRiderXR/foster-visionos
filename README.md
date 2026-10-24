@@ -32,8 +32,10 @@ Graphics device:
   `PassProperties`, `ExternalTextures`, `Memoryless`, `DepthResolve`) reports which of the
   features below the loaded SDL library provides. They are probed by export name at start-up,
   never by version number; `GraphicsDevice.IsKitSDLLoaded()` answers the same question before a
-  device exists. Features that are not available throw a `NotSupportedException` that names the
-  missing capability.
+  device exists. Under Native AOT the probe searches the library by name first and, when that
+  fails, looks through the main program (`NativeLibrary.GetMainProgramHandle()`), which finds an
+  `SDL3.framework` that the app links. Features that are not available throw a
+  `NotSupportedException` that names the missing capability.
 - `GraphicsDevice.RenderPassesLastFrame` and `GraphicsDevice.DrawCallsLastFrame` count the render
   passes and draw calls between two presents or flushes.
 - `AppFlags.DepthClip` creates the device without depth clamping and enables depth clip in every
@@ -124,8 +126,15 @@ referencing project places the kit's library next to the executable under the na
 property has to be visible to this project's build, so pass it as a global property
 (`dotnet build -p:FosterUseExternalSDL=true`) rather than only through the `ProjectReference`.
 
-How to embed the kit in a visionOS app (as an embedded framework) is not described yet; it
-follows once it has been tested on the device.
+In a visionOS app, the kit's `SDL3.framework` is embedded in the app (Embed & Sign), which also
+links it into the executable. Set `FosterUseExternalSDL=true` as above so Foster ships no library
+of its own. On iOS and visionOS, .NET's library search by name does not find a framework (it
+looks for `libSDL3.dylib` and similar names, not for `SDL3.framework/SDL3`), so the app registers
+a `DllImportResolver` for this assembly (`NativeLibrary.SetDllImportResolver(typeof(App).Assembly,
+…)`) that maps the name `SDL3` to `@rpath/SDL3.framework/SDL3`. Only one resolver is allowed per
+assembly, so a game that already registers one for another library has to handle both names in
+the same resolver. The same applies to a game published as a Native AOT library that an app
+embeds; `OperatingSystem.IsIOS()` is true on visionOS, so the iOS branch covers both.
 
 ## Versioning
 

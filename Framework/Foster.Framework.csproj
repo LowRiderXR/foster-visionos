@@ -6,7 +6,7 @@
 
     <Title>Foster</Title>
     <Product>Foster</Product>
-    <Version>0.4.2-visionos.1</Version>
+    <Version>0.4.2-visionos.2</Version>
     <Authors>Noel Berry</Authors>
     <Description>A small cross-platform 2D-focused Game Framework</Description>
     <RepositoryType>git</RepositoryType>
