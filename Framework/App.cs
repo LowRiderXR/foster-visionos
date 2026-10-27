@@ -691,6 +691,22 @@ public abstract class App : IDisposable
 			type == SDL_EventType.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
 			GraphicsDevice.OnEvent(type);
 
+		// the window and the graphics device keep the pixel size from the event (no SDL call;
+		// see Window.SizeInPixels and GraphicsDeviceSDL.ApplyPendingResize)
+		if (type == SDL_EventType.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+		{
+			var windowID = eventPtr->window.windowID;
+			var pixelWidth = eventPtr->window.data1;
+			var pixelHeight = eventPtr->window.data2;
+			foreach (var window in windows)
+				if (window.ID == windowID)
+				{
+					window.OnPixelSizeChanged(pixelWidth, pixelHeight);
+					break;
+				}
+			GraphicsDevice.OnWindowPixelSizeChanged(windowID, pixelWidth, pixelHeight);
+		}
+
 		if (type == SDL_EventType.SDL_EVENT_DID_ENTER_FOREGROUND)
 			OnEvent?.Invoke(AppEvents.EnterForeground);
 

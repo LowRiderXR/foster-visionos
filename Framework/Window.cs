@@ -126,9 +126,30 @@ public sealed class Window : IDrawableTarget
 		{
 			if (Handle == nint.Zero)
 				throw closedWindowException;
+			// Cached: SDL's UIKit backend reads the view's bounds for this (a main-thread API);
+			// a host that ticks on another thread would otherwise hit it every frame. The value
+			// is taken when the window is created and whenever SDL reports a pixel size change.
+			if (sizeInPixels is Point2 cached)
+				return cached;
 			SDL_GetWindowSizeInPixels(Handle, out int w, out int h);
-			return new(w, h);
+			var size = new Point2(w, h);
+			sizeInPixels = size;
+			return size;
 		}
+	}
+
+	private Point2? sizeInPixels;
+
+	/// <summary>
+	/// Called with SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED (data1, data2 are the new size in pixels),
+	/// so that <see cref="SizeInPixels"/> needs no SDL call afterwards.
+	/// </summary>
+	internal void OnPixelSizeChanged(int width, int height)
+	{
+		if (width > 0 && height > 0)
+			sizeInPixels = new Point2(width, height);
+		else
+			sizeInPixels = null;
 	}
 
 	/// <summary>
@@ -335,6 +356,10 @@ public sealed class Window : IDrawableTarget
 		if (Handle == nint.Zero)
 			throw App.CreateExceptionFromSDL(nameof(SDL_CreateWindow));
 		ID = SDL_GetWindowID(Handle);
+
+		// read the pixel size once here, on the thread that created the window (see SizeInPixels)
+		SDL_GetWindowSizeInPixels(Handle, out int pixelWidth, out int pixelHeight);
+		sizeInPixels = new Point2(pixelWidth, pixelHeight);
 
 		app.WindowCreated(this);
 	}

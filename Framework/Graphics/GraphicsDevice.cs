@@ -84,6 +84,8 @@ public abstract class GraphicsDevice
 	/// <summary>Ends the open passes and submits the recorded commands without presenting to a window (host-driven loop without present).</summary>
 	internal abstract void Flush();
 	internal abstract void OnEvent(SDL3.SDL.SDL_EventType type);
+	/// <summary>A window's size in pixels changed (SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED); the new size comes from the event, so no SDL call is needed on the event thread.</summary>
+	internal virtual void OnWindowPixelSizeChanged(uint windowID, int width, int height) { }
 
 	// layers: 1 for a 2D texture, above 1 for a 2D array. properties: SDL properties passed to
 	// SDL_CreateGPUTexture (0 for none); a property naming an existing native texture makes this

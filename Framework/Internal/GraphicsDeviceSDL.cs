@@ -122,6 +122,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		public bool ReclaimPending;
 		public bool Claimed;
 		public bool PendingResize; // window pixel size changed, backbuffer must follow before the next draw
+		public Point2? PendingPixelSize; // the new size from the event; null means ask SDL
 		public Target? Backbuffer;
 		public Point2 BackbufferSize;
 		public bool SupportsMailboxPresentMode;
@@ -596,6 +597,18 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		}
 	}
 
+	internal override void OnWindowPixelSizeChanged(uint windowID, int width, int height)
+	{
+		// keep the size from the event, so ApplyPendingResize needs no SDL_GetWindowSizeInPixels
+		// (a main-thread API in SDL's UIKit backend) on the thread that pumps the events
+		foreach (var state in windows.Values)
+			if (state.ID == windowID)
+			{
+				state.PendingPixelSize = width > 0 && height > 0 ? new Point2(width, height) : null;
+				break;
+			}
+	}
+
 	/// <summary>
 	/// Brings the backbuffer in line with the window's current pixel size when the size changed
 	/// since the last frame. Without this, the frame after a resize (for example switching to
@@ -609,7 +622,16 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 			return;
 		state.PendingResize = false;
 
-		SDL_GetWindowSizeInPixels(state.Handle, out int width, out int height);
+		int width, height;
+		if (state.PendingPixelSize is Point2 pending)
+		{
+			(width, height) = (pending.X, pending.Y);
+			state.PendingPixelSize = null;
+		}
+		else
+		{
+			SDL_GetWindowSizeInPixels(state.Handle, out width, out height);
+		}
 		if (width <= 0 || height <= 0)
 			return;
 		UpdateBackbuffer(state, width, height);
