@@ -285,7 +285,7 @@ public abstract class App : IDisposable
 
 	/// <summary>
 	/// Disposes the Application resources. May be called after <see cref="Run"/>,
-	/// but not during any <see cref="App"/> callbacks (<see cref="Startup"/>, <see cref="Update"/>, <see cref="Render"/>, <see cref="Shutdown"/>)
+	/// but not during any <see cref="App"/> callbacks (<see cref="Startup"/>, <see cref="Update()"/>, <see cref="Render"/>, <see cref="Shutdown"/>)
 	/// </summary>
 	public void Dispose()
 	{
@@ -431,7 +431,7 @@ public abstract class App : IDisposable
 	}
 
 	/// <summary>
-	/// Host-driven loop, part two: exactly one frame. Polls events, runs one <see cref="Update"/>
+	/// Host-driven loop, part two: exactly one frame. Polls events, runs one <see cref="Update()"/>
 	/// with the given delta (the <see cref="UpdateMode"/> is not used, the host owns the clock),
 	/// renders, and presents to the windows. With present set to false the rendered commands are
 	/// still submitted to the GPU (so render targets the host reads are complete), but nothing is
@@ -439,10 +439,33 @@ public abstract class App : IDisposable
 	/// </summary>
 	public void Tick(TimeSpan delta, bool present = true)
 	{
+		Update(delta);
+		RenderFrame(present);
+	}
+
+	/// <summary>
+	/// Host-driven loop, part two as two steps: the update half of <see cref="Tick(TimeSpan, bool)"/>. Polls
+	/// events and runs one <see cref="Update()"/> with the given delta; nothing is rendered. For
+	/// hosts whose render input (a tracked pose) is only known after the update, so that the
+	/// update can run early and <see cref="RenderFrame"/> late in the same frame.
+	/// </summary>
+	public void Update(TimeSpan delta)
+	{
 		if (!Running)
 			throw NotRunningException;
 
 		Step(delta);
+	}
+
+	/// <summary>
+	/// Host-driven loop, part two as two steps: the render half of <see cref="Tick(TimeSpan, bool)"/>. Renders
+	/// one frame and presents it (or, with present false, only submits the GPU work). Call once
+	/// after <see cref="Update(TimeSpan)"/>; calling it without an update renders the same state again.
+	/// </summary>
+	public void RenderFrame(bool present = true)
+	{
+		if (!Running)
+			throw NotRunningException;
 
 		Time = Time.AdvanceRenderFrame();
 		Render();
@@ -574,7 +597,7 @@ public abstract class App : IDisposable
 
 	/// <summary>
 	/// One update step: advances <see cref="Time"/> by delta, polls input and events, runs the
-	/// queued main-thread actions and calls <see cref="Update"/>. Used by <see cref="Run"/>'s
+	/// queued main-thread actions and calls <see cref="Update()"/>. Used by <see cref="Run"/>'s
 	/// loop (through the UpdateMode) and by the host-driven <see cref="Tick(TimeSpan, bool)"/>.
 	/// </summary>
 	private void Step(TimeSpan delta)
