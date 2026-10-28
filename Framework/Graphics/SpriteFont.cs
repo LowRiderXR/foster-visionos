@@ -387,7 +387,6 @@ public class SpriteFont : IDisposable
 	public void AddCharacters(Font font, ReadOnlySpan<int> codepoints, float? size = null, bool premultiplyAlpha = true, bool pixelPerfect = false)
 	{
 		var scale = font.GetScale(size ?? Size);
-		var buffers = new ThreadLocal<Color[]>();
 		var tasks = new List<Task>();
 		var packer = new Packer()
 		{
@@ -395,6 +394,13 @@ public class SpriteFont : IDisposable
 			Padding = 1,
 			Trim = true
 		};
+
+		// Rendered glyphs in codepoint order. The glyphs are rasterized in parallel, but they
+		// are added to the packer only afterwards, in this order: the packer sorts by size and
+		// keeps the insertion order for equal sizes, so adding them in completion order made
+		// the atlas layout differ from run to run (visible as changed edge pixels of glyphs
+		// sampled with a linear filter).
+		var rendered = new List<(int Codepoint, int Width, int Height, Color[] Pixels)>();
 
 		// add all codepoints
 		foreach (var codepoint in codepoints)
@@ -411,16 +417,13 @@ public class SpriteFont : IDisposable
 			if (!ch.Visible)
 				continue;
 
-			// blit and add to packer
+			var slot = rendered.Count;
+			rendered.Add((codepoint, ch.Width, ch.Height, new Color[ch.Width * ch.Height]));
+
+			// blit into the glyph's own buffer
 			tasks.Add(Task.Run(() =>
 			{
-				// make sure our image buffer is big enough
-				var buffer = buffers.Value;
-				if (buffer == null || buffer.Length < ch.Width * ch.Height)
-				{
-					buffer = new Color[ch.Width * ch.Height * 2];
-					buffers.Value = buffer;
-				}
+				var buffer = rendered[slot].Pixels;
 
 				// blit char
 				font.GetPixels(ch, buffer, premultiplyAlpha);
@@ -434,16 +437,13 @@ public class SpriteFont : IDisposable
 						else
 							buffer[i] = Color.White;
 				}
-
-				// append to packer
-				lock(packer)
-					packer.Add(codepoint, string.Empty, new RectInt(0, 0, ch.Width, ch.Height), ch.Width, buffer);
 			}));
 		}
 
-		// wait on all blitting
+		// wait on all blitting, then append to the packer in a fixed order
 		Task.WaitAll([..tasks]);
-		buffers.Dispose();
+		foreach (var (codepoint, width, height, pixels) in rendered)
+			packer.Add(codepoint, string.Empty, new RectInt(0, 0, width, height), width, pixels);
 
 		// get packed textures
 		var result = packer.Pack();
