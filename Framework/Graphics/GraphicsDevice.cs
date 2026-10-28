@@ -83,6 +83,14 @@ public abstract class GraphicsDevice
 	internal abstract void Present();
 	/// <summary>Ends the open passes and submits the recorded commands without presenting to a window (host-driven loop without present).</summary>
 	internal abstract void Flush();
+
+	/// <summary>
+	/// Ends the open passes and submits the commands recorded so far, in the middle of a frame.
+	/// Later draws start new passes that load their targets. A game uses this to split its
+	/// frame into separately submitted command buffers, for example to time its passes with a
+	/// host's completion callback; it also resets the per-frame pass and draw counters.
+	/// </summary>
+	public void SubmitCommands() => Flush();
 	internal abstract void OnEvent(SDL3.SDL.SDL_EventType type);
 	/// <summary>A window's size in pixels changed (SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED); the new size comes from the event, so no SDL call is needed on the event thread.</summary>
 	internal virtual void OnWindowPixelSizeChanged(uint windowID, int width, int height) { }
@@ -179,13 +187,14 @@ public abstract class GraphicsDevice
 		}
 
 		// array textures cannot be bound as 2D samplers (the shader would read a
-		// texture2d_array as texture2d); reject before a render pass is opened
+		// texture2d_array as texture2d); reject before a render pass is opened, unless the
+		// texture is marked for a shader that declares a texture array (Texture.AllowArraySampling)
 		for (int i = 0; i < command.VertexSamplers.Count; i++)
-			if (command.VertexSamplers[i].Texture is { IsArray: true } arr)
-				throw new InvalidOperationException($"Texture '{arr.Name}' is a 2D array with {arr.Layers} layers and cannot be sampled as a 2D texture (vertex sampler {i})");
+			if (command.VertexSamplers[i].Texture is { IsArray: true, AllowArraySampling: false } arr)
+				throw new InvalidOperationException($"Texture '{arr.Name}' is a 2D array with {arr.Layers} layers and cannot be sampled as a 2D texture (vertex sampler {i}); set Texture.AllowArraySampling for a texture array shader");
 		for (int i = 0; i < command.FragmentSamplers.Count; i++)
-			if (command.FragmentSamplers[i].Texture is { IsArray: true } arr)
-				throw new InvalidOperationException($"Texture '{arr.Name}' is a 2D array with {arr.Layers} layers and cannot be sampled as a 2D texture (fragment sampler {i})");
+			if (command.FragmentSamplers[i].Texture is { IsArray: true, AllowArraySampling: false } arr)
+				throw new InvalidOperationException($"Texture '{arr.Name}' is a 2D array with {arr.Layers} layers and cannot be sampled as a 2D texture (fragment sampler {i}); set Texture.AllowArraySampling for a texture array shader");
 
 		// a multisampled depth texture can only be sampled through its resolved copy, which
 		// needs the depth resolve of the SDL_GPU kit; without it the copy is never written

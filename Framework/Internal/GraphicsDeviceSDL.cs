@@ -1471,8 +1471,8 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		var res = FindResource<TextureResource>(texture?.Resource);
 		if (res == null)
 			return RequireResource<TextureResource>(emptyDefaultTexture).SamplerTexture;
-		if (res.Layers > 1)
-			throw new InvalidOperationException($"Texture '{texture!.Name}' is a 2D array with {res.Layers} layers and cannot be sampled as a 2D texture");
+		if (res.Layers > 1 && !texture!.AllowArraySampling)
+			throw new InvalidOperationException($"Texture '{texture!.Name}' is a 2D array with {res.Layers} layers and cannot be sampled as a 2D texture (set Texture.AllowArraySampling for a shader that declares a texture array)");
 		if (res.SampleCount != SDL_GPUSampleCount.SDL_GPU_SAMPLECOUNT_1 && texture!.Format.IsDepthStencilFormat() && !Capabilities.DepthResolve)
 			throw new NotSupportedException($"Texture '{texture.Name}' is a multisampled depth texture; sampling it needs the depth resolve of the SDL_GPU kit for visionOS (GraphicsCapabilities.DepthResolve), the loaded SDL reports {Capabilities}");
 		return res.SamplerTexture;
@@ -2507,6 +2507,7 @@ internal unsafe class GraphicsDeviceSDL(App app, GraphicsDriver preferred) : Gra
 		TextureFormat.Depth16 => SDL_GPUTextureFormat.SDL_GPU_TEXTUREFORMAT_D16_UNORM,
 		TextureFormat.Depth24 => SDL_GPUTextureFormat.SDL_GPU_TEXTUREFORMAT_D24_UNORM,
 		TextureFormat.Depth32 => SDL_GPUTextureFormat.SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
+		TextureFormat.B8G8R8A8SRGB => SDL_GPUTextureFormat.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB,
 		_ => throw new ArgumentException("Invalid Texture Format", nameof(format)),
 	};
 

@@ -57,6 +57,14 @@ public enum TextureFormat
 	Depth32,
 
 	/// <summary>
+	/// 8 bit four channel texture in BGRA order with sRGB encoding: the GPU decodes on sampling
+	/// and encodes on writing, so shaders see linear values. This is the format of the drawables
+	/// a visionOS compositor hands out (bgra8Unorm_srgb); Foster only wraps such textures
+	/// (external textures of the SDL_GPU kit), it never uploads to or downloads from them.
+	/// </summary>
+	B8G8R8A8SRGB,
+
+	/// <summary>
 	/// Shorthand for R8G8B8A8
 	/// </summary>
 	Color = R8G8B8A8
@@ -78,6 +86,7 @@ public static class TextureFormatExt
 			TextureFormat.Depth16 => 2,
 			TextureFormat.Depth24 => 3,
 			TextureFormat.Depth32 => 4,
+			TextureFormat.B8G8R8A8SRGB => 4,
 			_ => throw new NotImplementedException()
 		};
 
@@ -88,6 +97,7 @@ public static class TextureFormatExt
 		=> format switch
 		{
 			TextureFormat.R8G8B8A8 => true,
+			TextureFormat.B8G8R8A8SRGB => true,
 			TextureFormat.R8 => true,
 			TextureFormat.R8G8 => true,
 			TextureFormat.Depth24Stencil8 => false,

@@ -78,6 +78,13 @@ public class Texture : IGraphicResource
 	public bool IsArray => Layers > 1;
 
 	/// <summary>
+	/// Allows binding this 2D array as a sampler. Off by default, because a shader that
+	/// declares a plain 2D texture would read it wrong; set it for a shader that declares a
+	/// texture array (texture2d_array in MSL) and selects the layer itself.
+	/// </summary>
+	public bool AllowArraySampling { get; set; }
+
+	/// <summary>
 	/// True for a memoryless multisampled attachment (tile memory only, SDL_GPU kit): it has no
 	/// contents outside its render pass, cannot be loaded, stored, copied or read back.
 	/// </summary>
